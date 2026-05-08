@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hpc.job import JobManager, JobStatus
+from hpc.scheduler import JobDetail
 from hpc.ssh import SSHManager, SSHError
 from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, PjmConfig
 
@@ -168,6 +169,44 @@ class TestJobManagerStatus:
         assert call_args.args[0] == "sacct"
         assert "12345678" in call_args.args[1]
         assert "--noheader" in call_args.args[1]
+
+
+class TestJobManagerDetail:
+    def test_get_job_detail_slurm_invokes_sacct_and_returns_detail(
+        self, mock_ssh_manager, sample_config
+    ):
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.return_value = MagicMock(
+            stdout=(
+                "12345|COMPLETED|0:0|00:01:23||16Gn\n"
+                "12345.batch|COMPLETED|0:0|00:01:23|1024K|16Gn\n"
+            )
+        )
+
+        detail = manager.get_job_detail("12345")
+        assert detail == JobDetail(
+            state="COMPLETED",
+            exit_code="0:0",
+            elapsed="00:01:23",
+            max_rss="1024K",
+            req_mem="16Gn",
+        )
+        call_args = mock_ssh_manager.run_command.call_args
+        assert call_args.args[0] == "sacct"
+        assert "-P" in call_args.args[1]
+
+    def test_get_job_detail_pjm_returns_none_without_ssh_call(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+
+        assert manager.get_job_detail("12345") is None
+        mock_ssh_manager.run_command.assert_not_called()
 
 
 class TestJobManagerTemplate:

@@ -285,6 +285,31 @@ def submit(
             raise typer.Exit(1)
 
 
+# Slurm State values that mean the job has finished and the accounting
+# fields (ExitCode / Elapsed / MaxRSS / ReqMem) are meaningful to display.
+_TERMINAL_SACCT_STATES = frozenset(
+    {
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "TIMEOUT",
+        "OUT_OF_MEMORY",
+        "BOOT_FAIL",
+        "NODE_FAIL",
+        "PREEMPTED",
+        "DEADLINE",
+        "REVOKED",
+        "SPECIAL_EXIT",
+    }
+)
+
+
+def _normalize_sacct_state(state: str) -> str:
+    """Strip Slurm State decorations like ``CANCELLED+`` / ``CANCELLED by 12345``."""
+    head = state.split()[0] if state else ""
+    return head.rstrip("+")
+
+
 @app.command()
 def status(id: str = typer.Argument(None), config: ConfigOption = None):
     """Check job status (accepts run_id or job_id)"""
@@ -316,8 +341,20 @@ def status(id: str = typer.Argument(None), config: ConfigOption = None):
     ssh = SSHManager(host=hpc_config.cluster.host)
     job_manager = JobManager(ssh_manager=ssh, config=hpc_config)
 
-    job_status = job_manager.get_job_status(job_id)
-    print(f"Job {job_id}: {job_status.value}")
+    detail = job_manager.get_job_detail(job_id)
+    if detail is None or not detail.state:
+        # Scheduler does not support detail (PJM), or sacct has not yet
+        # recorded this job. Fall back to the existing single-line display.
+        job_status = job_manager.get_job_status(job_id)
+        print(f"Job {job_id}: {job_status.value}")
+        return
+
+    print(f"Job {job_id}: {detail.state}")
+    if _normalize_sacct_state(detail.state) in _TERMINAL_SACCT_STATES:
+        print(f"  ExitCode: {detail.exit_code or '-'}")
+        print(f"  Elapsed:  {detail.elapsed or '-'}")
+        print(f"  MaxRSS:   {detail.max_rss or '-'}")
+        print(f"  ReqMem:   {detail.req_mem or '-'}")
 
 
 @app.command(name="list")

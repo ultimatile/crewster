@@ -2,6 +2,7 @@
 
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -12,6 +13,22 @@ class JobStatus(Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     TIMEOUT = "TIMEOUT"
+
+
+@dataclass
+class JobDetail:
+    """Raw scheduler-side job accounting fields.
+
+    Strings are stored verbatim from the scheduler so the user sees
+    the exact value (e.g. ``OUT_OF_MEMORY``, ``CANCELLED+``) without
+    any enum/unit normalization.
+    """
+
+    state: str
+    exit_code: str
+    elapsed: str
+    max_rss: str
+    req_mem: str
 
 
 class Scheduler(ABC):
@@ -29,6 +46,14 @@ class Scheduler(ABC):
 
     @abstractmethod
     def parse_status(self, output: str) -> JobStatus: ...
+
+    def detail_cmd(self, job_id: str) -> list[str] | None:
+        """Command that fetches detailed accounting info, or None if unsupported."""
+        return None
+
+    def parse_detail(self, output: str) -> JobDetail | None:
+        """Parse detail-command output, or None if unsupported / unparseable."""
+        return None
 
 
 class Slurm(Scheduler):
@@ -85,6 +110,63 @@ class Slurm(Scheduler):
             if status in statuses:
                 return status
         return JobStatus.COMPLETED
+
+    def detail_cmd(self, job_id: str) -> list[str] | None:
+        return [
+            "sacct",
+            "-j",
+            job_id,
+            "--format=JobID,State,ExitCode,Elapsed,MaxRSS,ReqMem",
+            "--noheader",
+            "-P",
+        ]
+
+    def parse_detail(self, output: str) -> JobDetail | None:
+        # sacct -P emits one row per accounting record (the parent step plus
+        # any sub-steps such as `.batch` / `.extern`). Columns appear in the
+        # order requested via --format. -P (parsable2) does not add a trailing
+        # '|', but we tolerate it so callers can pass -p output as well.
+        rows: list[list[str]] = []
+        for raw in output.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            fields = line.split("|")
+            if fields and fields[-1] == "":
+                fields.pop()
+            if len(fields) < 6:
+                continue
+            rows.append(fields[:6])
+
+        if not rows:
+            return None
+
+        # Parent step rows have a JobID without a '.' separator; sub-steps
+        # (`.batch`, `.extern`, `.0`, ...) always contain a dot.
+        parent = next((r for r in rows if "." not in r[0]), None)
+        if parent is None:
+            return None
+
+        # MaxRSS is per-step; the parent row typically reports an empty
+        # MaxRSS, while `.batch` carries the script's peak RSS. Prefer the
+        # `.batch` row's value, otherwise take the first non-empty across rows.
+        batch = next((r for r in rows if r[0].endswith(".batch")), None)
+        if batch is not None and batch[4]:
+            max_rss = batch[4]
+        else:
+            max_rss = next((r[4] for r in rows if r[4]), "")
+
+        state = parent[1]
+        if not state:
+            return None
+
+        return JobDetail(
+            state=state,
+            exit_code=parent[2],
+            elapsed=parent[3],
+            max_rss=max_rss,
+            req_mem=parent[5],
+        )
 
 
 class PJM(Scheduler):

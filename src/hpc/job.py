@@ -7,7 +7,7 @@ from jinja2 import Template
 from .config import HpcConfig
 from .ssh import SSHManager
 from .run import RunConfig
-from .scheduler import JobStatus, get_scheduler
+from .scheduler import JobDetail, JobStatus, get_scheduler
 
 
 def _resolve_home_path(ssh_manager, path: str) -> str:
@@ -154,6 +154,14 @@ class JobManager:
         cmd = self.scheduler.status_cmd(job_id)
         result = self.ssh_manager.run_command(cmd[0], cmd[1:])
         return self.scheduler.parse_status(result.stdout)
+
+    def get_job_detail(self, job_id: str) -> JobDetail | None:
+        """Get detailed accounting info, or None if the scheduler does not support it."""
+        cmd = self.scheduler.detail_cmd(job_id)
+        if cmd is None:
+            return None
+        result = self.ssh_manager.run_command(cmd[0], cmd[1:])
+        return self.scheduler.parse_detail(result.stdout)
 
     def get_job_output(self, run_id: str, job_id: str, error: bool = False) -> str:
         """Get job output file contents"""
