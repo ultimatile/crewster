@@ -92,7 +92,7 @@ hpc submit --workdir /scratch/user/other "python train.py"  # override remote wo
 
 Only column-zero directive lines that appear before the first executable line in the user script are hoisted, matching the schedulers' own prologue-scan rule. Directives after an executable line, or inside heredocs, are left in the body as-is.
 
-When the same option is set both in `[slurm.options]` / `[pjm.options]` and via a `#SBATCH` / `#PJM` line in the script, the script's value wins (the scheduler's last-occurrence-wins semantics for duplicate directives). The `submit_options` list is passed as command-line flags to `sbatch` / `pjsub` and, per scheduler specifications, overrides script directives unconditionally.
+When the same option is set both via config (`[slurm.options]` for Slurm, the `pjm.options` array for PJM) and via a `#SBATCH` / `#PJM` line in the script, the script's value wins (the scheduler's last-occurrence-wins semantics for duplicate directives). The `submit_options` list is passed as command-line flags to `sbatch` / `pjsub` and, per scheduler specifications, overrides script directives unconditionally.
 
 ### `hpc status`
 

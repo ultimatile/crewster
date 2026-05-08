@@ -41,7 +41,7 @@ If `hpc.toml` does not exist in the project, run `hpc init` to create it, then a
 - Start from the assumption that PWD is already `[cluster].workdir`. No `cd` needed for the common case.
 - If you genuinely need a different working directory, prefer an explicit absolute path or a `WORKDIR` env-var override; do **not** rely on `$SLURM_SUBMIT_DIR` (the scheduler does not always propagate it into the job's shell env).
 - The script's stdout/stderr land in the scheduler's job-output files, retrievable via `hpc job-output <id>`.
-- `#SBATCH` / `#PJM` directives at the top of the script (column-zero, before the first executable line) are honored: hpc hoists them into the rendered job-script prologue. On conflict with `[slurm.options]` / `[pjm.options]`, the script's value wins.
+- `#SBATCH` / `#PJM` directives at the top of the script (column-zero, before the first executable line) are honored: hpc hoists them into the rendered job-script prologue. On conflict with the corresponding config entry (`[slurm.options]` for Slurm, the `pjm.options` array for PJM), the script's value wins.
 
 ## Common pitfalls
 
