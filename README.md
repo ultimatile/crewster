@@ -88,6 +88,12 @@ hpc submit -s run.sh --wait
 hpc submit --workdir /scratch/user/other "python train.py"  # override remote workdir
 ```
 
+`#SBATCH` (Slurm) and `#PJM` (PJM) directives written at the top of a script passed via `--script` are honored: hpc hoists them into the prologue of the rendered job script, so they are scanned by `sbatch` / `pjsub` instead of being silently treated as comments.
+
+Only column-zero directive lines that appear before the first executable line in the user script are hoisted, matching the schedulers' own prologue-scan rule. Directives after an executable line, or inside heredocs, are left in the body as-is.
+
+When the same option is set both in `[slurm.options]` / `[pjm.options]` and via a `#SBATCH` / `#PJM` line in the script, the script's value wins (the scheduler's last-occurrence-wins semantics for duplicate directives). The `submit_options` list is passed as command-line flags to `sbatch` / `pjsub` and, per scheduler specifications, overrides script directives unconditionally.
+
 ### `hpc status`
 
 Checks the status of a submitted job.

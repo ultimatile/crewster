@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hpc.job import JobManager, JobStatus
+from hpc.job import JobManager, JobStatus, _extract_prologue_directives
 from hpc.scheduler import JobDetail
 from hpc.ssh import SSHManager, SSHError
 from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, PjmConfig
@@ -320,3 +320,215 @@ class TestJobManagerTailJobOutput:
 
         rc = manager.tail_job_output("run_id", "12345678")
         assert rc == 130
+
+
+class TestExtractPrologueDirectives:
+    """Helper that hoists scheduler directives from user-supplied script content."""
+
+    def test_empty_content(self):
+        directives, body = _extract_prologue_directives("", "#SBATCH")
+        assert directives == []
+        assert body == ""
+
+    def test_shebang_only(self):
+        directives, body = _extract_prologue_directives("#!/bin/bash\n", "#SBATCH")
+        assert directives == []
+        assert body == ""
+
+    def test_shebang_dropped_with_body(self):
+        content = "#!/bin/bash\necho hi\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == []
+        assert body == "echo hi\n"
+
+    def test_no_shebang_no_directives_unchanged(self):
+        directives, body = _extract_prologue_directives("echo hi\n", "#SBATCH")
+        assert directives == []
+        assert body == "echo hi\n"
+
+    def test_extracts_slurm_directive_after_shebang(self):
+        content = "#!/bin/bash\n#SBATCH --array=1-10%5\necho hi\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == ["#SBATCH --array=1-10%5"]
+        assert body == "echo hi\n"
+
+    def test_extracts_pjm_directive(self):
+        content = '#!/bin/bash\n#PJM -L "node=4"\n#PJM -j\necho pjm\n'
+        directives, body = _extract_prologue_directives(content, "#PJM")
+        assert directives == ['#PJM -L "node=4"', "#PJM -j"]
+        assert body == "echo pjm\n"
+
+    def test_pjm_prefix_does_not_match_sbatch_lines(self):
+        content = "#PJM -L node=4\n#SBATCH --array=1-5\necho hi\n"
+        directives, body = _extract_prologue_directives(content, "#PJM")
+        assert directives == ["#PJM -L node=4"]
+        # `#SBATCH ...` is a non-directive comment for the PJM matcher and
+        # stays in the body. Prologue scan continues past it.
+        assert body == "#SBATCH --array=1-5\necho hi\n"
+
+    def test_directive_after_first_executable_not_hoisted(self):
+        # Mirrors scheduler behavior: once an executable line is seen,
+        # subsequent #SBATCH lines are ignored.
+        content = "#!/bin/bash\necho before\n#SBATCH --array=1-5\necho after\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == []
+        assert body == "echo before\n#SBATCH --array=1-5\necho after\n"
+
+    def test_heredoc_directive_lookalike_not_hoisted(self):
+        content = "#!/bin/bash\ncat <<EOF\n#SBATCH --bogus=1\nEOF\necho done\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == []
+        # `cat <<EOF` is the first executable line; everything after it is
+        # preserved verbatim, including the directive-look-alike heredoc body.
+        assert body == "cat <<EOF\n#SBATCH --bogus=1\nEOF\necho done\n"
+
+    def test_blank_lines_between_directives_preserved(self):
+        content = (
+            "#!/bin/bash\n"
+            "\n"
+            "#SBATCH --partition=gpu\n"
+            "\n"
+            "#SBATCH --time=01:00:00\n"
+            "echo hi\n"
+        )
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == ["#SBATCH --partition=gpu", "#SBATCH --time=01:00:00"]
+        # Blank lines between hoisted directives are kept in body — they are
+        # comments to the scheduler and do not terminate the prologue scan.
+        assert body == "\n\necho hi\n"
+
+    def test_non_directive_comment_preserved_in_prologue(self):
+        # A `# regular comment` line does not terminate the prologue scan,
+        # but it is also not a directive — it stays in the body.
+        content = "#!/bin/bash\n# user explanation\n#SBATCH --partition=gpu\necho hi\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == ["#SBATCH --partition=gpu"]
+        assert body == "# user explanation\necho hi\n"
+
+    def test_indented_directive_not_hoisted(self):
+        # Schedulers require column-zero `#SBATCH`; indented lines are
+        # bash comments, not directives.
+        content = "#!/bin/bash\n  #SBATCH --partition=gpu\necho hi\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == []
+        assert body == "  #SBATCH --partition=gpu\necho hi\n"
+
+    def test_no_trailing_newline_preserved(self):
+        directives, body = _extract_prologue_directives("echo hi", "#SBATCH")
+        assert directives == []
+        assert body == "echo hi"
+
+
+class TestJobManagerHoistsUserDirectives:
+    def test_render_hoists_sbatch_directive_from_script_body(
+        self, mock_ssh_manager, sample_config
+    ):
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        from hpc.run import RunConfig
+
+        cmd = "#!/bin/bash\n#SBATCH --array=1-10%5\necho hi\n"
+        run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
+        script = manager._render_job_script(run)
+
+        # User directive lands in the prologue, before `cd`.
+        array_idx = script.index("#SBATCH --array=1-10%5")
+        cd_idx = script.index("cd /scratch/user/proj")
+        assert array_idx < cd_idx
+        # And before the template's hardcoded --output= bookkeeping line, so
+        # hpc's run-tracking output path always wins over any user override.
+        output_idx = script.index("--output=/scratch/user/proj/.hpc/runs/test_run")
+        assert array_idx < output_idx
+        # User shebang is stripped (template emits its own).
+        assert script.count("#!/bin/bash") == 1
+        # Body retains the executable line.
+        assert "echo hi" in script
+
+    def test_render_hoists_multiple_pjm_directives(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=12"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        from hpc.run import RunConfig
+
+        cmd = '#!/bin/bash\n#PJM -L "rscgrp=small"\n#PJM -j\n#PJM -N myjob\necho pjm\n'
+        run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
+        script = manager._render_job_script(run)
+
+        cd_idx = script.index("cd /scratch/user/proj")
+        for directive in ('#PJM -L "rscgrp=small"', "#PJM -j", "#PJM -N myjob"):
+            assert directive in script
+            assert script.index(directive) < cd_idx
+        # Original order preserved.
+        assert (
+            script.index('#PJM -L "rscgrp=small"')
+            < script.index("#PJM -j")
+            < script.index("#PJM -N myjob")
+        )
+
+    def test_user_directive_emitted_after_config_directive_slurm(
+        self, mock_ssh_manager, sample_config
+    ):
+        """User directive wins on conflict via scheduler last-occurrence-wins."""
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        from hpc.run import RunConfig
+
+        cmd = "#!/bin/bash\n#SBATCH --partition=cpu\necho hi\n"
+        run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
+        script = manager._render_job_script(run)
+
+        config_partition = script.index("#SBATCH --partition=gpu")
+        user_partition = script.index("#SBATCH --partition=cpu")
+        assert config_partition < user_partition
+
+    def test_user_directive_emitted_after_config_directive_pjm(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=12"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        from hpc.run import RunConfig
+
+        cmd = '#!/bin/bash\n#PJM -L "node=4"\necho pjm\n'
+        run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
+        script = manager._render_job_script(run)
+
+        config_node = script.index("#PJM -L node=12")
+        user_node = script.index('#PJM -L "node=4"')
+        assert config_node < user_node
+
+    def test_render_no_user_directives_unchanged(self, mock_ssh_manager, sample_config):
+        """Plain command without directives: rendered output matches the
+        pre-hoist behavior — user_directives block emits nothing extra."""
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="python train.py", status="pending")
+        script = manager._render_job_script(run)
+        # Sanity: the command body is at the bottom, config directives at top.
+        assert "python train.py" in script
+        assert script.index("#SBATCH --partition=gpu") < script.index("python train.py")
+
+    def test_legacy_submit_job_hoists_user_directives(
+        self, mock_ssh_manager, sample_config
+    ):
+        """Legacy `submit_job(cmd)` path also hoists user directives so the
+        two submission paths render consistent prologues."""
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="12345678\n")
+
+        cmd = "#!/bin/bash\n#SBATCH --array=1-5\necho hi\n"
+        manager.submit_job(cmd)
+
+        # The rendered script is piped to sbatch via input_text.
+        call_args = mock_ssh_manager.run_command.call_args
+        script = call_args.kwargs["input_text"]
+        cd_idx = script.index("cd /scratch/user/proj")
+        assert script.index("#SBATCH --array=1-5") < cd_idx
+        assert script.count("#!/bin/bash") == 1

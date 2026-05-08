@@ -1,5 +1,6 @@
 """Job management for HPC schedulers"""
 
+import re
 from pathlib import Path
 
 from jinja2 import Template
@@ -26,6 +27,9 @@ JOB_TEMPLATE = """#!/bin/bash
 {% for directive in directives %}
 {{ directive }}
 {% endfor %}
+{% for directive in user_directives %}
+{{ directive }}
+{% endfor %}
 {{ scheduler.directive_prefix().split()[0] }} --output={{ workdir }}/.hpc/runs/{{ run_id }}/job-%j.out
 {{ scheduler.directive_prefix().split()[0] }} --error={{ workdir }}/.hpc/runs/{{ run_id }}/job-%j.err
 
@@ -37,6 +41,61 @@ cd {{ job_workdir }}
 
 {{ cmd }}
 """
+
+
+def _extract_prologue_directives(content: str, prefix: str) -> tuple[list[str], str]:
+    """Hoist scheduler directives from a user-supplied script's prologue.
+
+    Mirrors the prologue-scan that sbatch and pjsub themselves perform:
+    starting from the top of `content`, accept only shebang, blank,
+    comment, and matching-prefix directive lines; stop at the first
+    non-comment, non-blank executable line and leave everything from
+    there onward untouched. Directive lines are matched at column zero
+    with ``^<prefix>\\b`` (matching the schedulers' own column-zero
+    rule) and removed from the body. A leading ``#!`` shebang line, if
+    present, is dropped because the rendered job-script template
+    injects its own.
+
+    Without this hoist, directives written inside user scripts land
+    after the template's ``cd workdir`` and env-setup lines and are
+    silently ignored by the scheduler.
+
+    Returns ``(directives_in_original_order, body_text)``. Directives
+    have no trailing newline; body_text concatenates the kept lines
+    and preserves original line endings.
+    """
+    if not content:
+        return [], content
+
+    lines = content.splitlines(keepends=True)
+    directives: list[str] = []
+    body_parts: list[str] = []
+
+    # Strip a leading shebang only; the template injects its own.
+    start = 1 if lines and lines[0].startswith("#!") else 0
+
+    directive_re = re.compile(rf"^{re.escape(prefix)}\b")
+    in_prologue = True
+
+    for line in lines[start:]:
+        if in_prologue:
+            stripped = line.strip()
+            if not stripped:
+                body_parts.append(line)
+            elif directive_re.match(line):
+                directives.append(line.rstrip("\r\n"))
+            elif stripped.startswith("#"):
+                # Non-directive comment (any indent): bash treats it as
+                # a comment and the scheduler's prologue scan skips it,
+                # so we keep it in the body and continue scanning.
+                body_parts.append(line)
+            else:
+                in_prologue = False
+                body_parts.append(line)
+        else:
+            body_parts.append(line)
+
+    return directives, "".join(body_parts)
 
 
 class JobManager:
@@ -93,14 +152,17 @@ class JobManager:
         )
         directives = self._build_directives(options, run.run_id)
         setup_commands = self.config.env.get_setup_commands()
+        prefix = self.scheduler.directive_prefix().split()[0]
+        user_directives, body = _extract_prologue_directives(run.cmd, prefix)
         return template.render(
             run_id=run.run_id,
             directives=directives,
+            user_directives=user_directives,
             scheduler=self.scheduler,
             workdir=workdir,
             job_workdir=job_workdir,
             setup_commands=setup_commands,
-            cmd=run.cmd,
+            cmd=body,
         )
 
     def submit_run(self, run: RunConfig, cwd_relative: Path = Path(".")) -> str:
@@ -133,14 +195,17 @@ class JobManager:
         directives = self._build_directives(options, "job")
 
         setup_commands = self.config.env.get_setup_commands()
+        prefix = self.scheduler.directive_prefix().split()[0]
+        user_directives, body = _extract_prologue_directives(cmd, prefix)
         script = template.render(
             run_id="job",
             directives=directives,
+            user_directives=user_directives,
             scheduler=self.scheduler,
             workdir=workdir,
             job_workdir=workdir,
             setup_commands=setup_commands,
-            cmd=cmd,
+            cmd=body,
         )
         submit_cmd = self.scheduler.submit_cmd()
         submit_options = self._get_submit_options()
