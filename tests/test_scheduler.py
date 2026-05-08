@@ -237,7 +237,7 @@ class TestSlurmParseDetail:
             req_mem="16Gn",
         )
 
-    def test_parse_falls_back_to_first_nonempty_max_rss_when_no_batch_row(self):
+    def test_parse_picks_step_max_rss_when_no_batch_row(self):
         output = (
             "12345|COMPLETED|0:0|00:00:42||8Gn\n"
             "12345.0|COMPLETED|0:0|00:00:42|512K|8Gn\n"
@@ -245,6 +245,30 @@ class TestSlurmParseDetail:
         detail = Slurm().parse_detail(output)
         assert detail is not None
         assert detail.max_rss == "512K"
+
+    def test_parse_picks_largest_max_rss_across_srun_steps(self):
+        # MPI / GPU jobs that dispatch via `srun` put the real workload RSS
+        # on numbered step rows; `.batch` only reflects the launcher.
+        output = (
+            "12345|COMPLETED|0:0|01:23:45||64Gn\n"
+            "12345.batch|COMPLETED|0:0|01:23:45|10M|64Gn\n"
+            "12345.0|COMPLETED|0:0|01:23:45|2500M|64Gn\n"
+            "12345.extern|COMPLETED|0:0|01:23:45|0|64Gn\n"
+        )
+        detail = Slurm().parse_detail(output)
+        assert detail is not None
+        assert detail.max_rss == "2500M"
+
+    def test_parse_compares_max_rss_unit_aware(self):
+        # 1G must beat 999M even though "1G" sorts before "999M" lexically.
+        output = (
+            "12345|COMPLETED|0:0|00:10:00||16Gn\n"
+            "12345.batch|COMPLETED|0:0|00:10:00|999M|16Gn\n"
+            "12345.0|COMPLETED|0:0|00:10:00|1G|16Gn\n"
+        )
+        detail = Slurm().parse_detail(output)
+        assert detail is not None
+        assert detail.max_rss == "1G"
 
     def test_parse_tolerates_trailing_pipe_from_parsable_mode(self):
         output = "12345|COMPLETED|0:0|00:00:10||4Gn|\n12345.batch|COMPLETED|0:0|00:00:10|256K|4Gn|\n"

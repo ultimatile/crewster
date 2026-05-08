@@ -31,6 +31,28 @@ class JobDetail:
     req_mem: str
 
 
+_MAX_RSS_UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+
+
+def _max_rss_to_bytes(value: str) -> int:
+    """Parse a Slurm MaxRSS field (e.g. ``1024K``, ``2.5G``, ``0``) to bytes.
+
+    Unparseable inputs sort as 0 so they lose any max-comparison.
+    """
+    if not value:
+        return 0
+    suffix = value[-1].upper()
+    if suffix in _MAX_RSS_UNITS:
+        try:
+            return int(float(value[:-1]) * _MAX_RSS_UNITS[suffix])
+        except ValueError:
+            return 0
+    try:
+        return int(float(value))
+    except ValueError:
+        return 0
+
+
 class Scheduler(ABC):
     @abstractmethod
     def directive_prefix(self) -> str: ...
@@ -148,13 +170,13 @@ class Slurm(Scheduler):
             return None
 
         # MaxRSS is per-step; the parent row typically reports an empty
-        # MaxRSS, while `.batch` carries the script's peak RSS. Prefer the
-        # `.batch` row's value, otherwise take the first non-empty across rows.
-        batch = next((r for r in rows if r[0].endswith(".batch")), None)
-        if batch is not None and batch[4]:
-            max_rss = batch[4]
-        else:
-            max_rss = next((r[4] for r in rows if r[4]), "")
+        # MaxRSS. For plain-cmd jobs the script's peak RSS lives on `.batch`,
+        # but jobs that dispatch the workload via `srun` get the real RSS
+        # on numbered step rows (`.0`, `.1`, ...) while `.batch` only
+        # reflects the launcher. Pick the maximum across all non-empty
+        # step rows so both shapes report correctly.
+        non_empty = [r[4] for r in rows if r[4]]
+        max_rss = max(non_empty, key=_max_rss_to_bytes, default="")
 
         state = parent[1]
         if not state:
