@@ -42,12 +42,49 @@ class Slurm(Scheduler):
         return output.strip()
 
     def status_cmd(self, job_id: str) -> list[str]:
-        return ["sacct", "-j", job_id, "--format=State", "--noheader"]
+        # -X suppresses jobsteps so each row is one allocation; for an array
+        # job this yields exactly one row per task, which the aggregation
+        # below relies on.
+        # State%30 widens the column past sacct's 10-char default so that
+        # long state names (CONFIGURING, OUT_OF_MEMORY, ...) are not
+        # truncated to "CONFIGURI+" / "OUT_OF_ME+" — the truncation marker
+        # would survive rstrip("+") as a prefix that misses _STATUS_MAP and
+        # falls back to FAILED, exiting wait_for_job prematurely.
+        return [
+            "sacct",
+            "-j",
+            job_id,
+            "--format=State%30",
+            "--noheader",
+            "-X",
+        ]
 
     def parse_status(self, output: str) -> JobStatus:
-        lines = output.strip().splitlines()
-        status_str = lines[0].strip().rstrip("+") if lines else ""
-        return _STATUS_MAP.get(status_str, JobStatus.FAILED)
+        # Aggregate over all rows so an array job is reported as terminal
+        # only once every task is terminal. A single non-terminal task in
+        # the set must keep the aggregate non-terminal to prevent
+        # wait_for_job from exiting prematurely.
+        # Normalize each row to its first whitespace-separated token so
+        # extended forms such as "CANCELLED by 12345" (emitted at the
+        # widened State%30 column) reduce to "CANCELLED".
+        lines = []
+        for ln in output.strip().splitlines():
+            tokens = ln.split()
+            if tokens:
+                lines.append(tokens[0].rstrip("+"))
+        if not lines:
+            return JobStatus.FAILED
+        statuses = [_STATUS_MAP.get(s, JobStatus.FAILED) for s in lines]
+        for status in (
+            JobStatus.RUNNING,
+            JobStatus.PENDING,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+            JobStatus.TIMEOUT,
+        ):
+            if status in statuses:
+                return status
+        return JobStatus.COMPLETED
 
 
 class PJM(Scheduler):
@@ -94,13 +131,33 @@ class PJM(Scheduler):
         return self._STATUS_MAP.get(status_str, JobStatus.FAILED)
 
 
+# Slurm job state strings as reported by `sacct`. Unknown states fall back
+# to FAILED at the call site so that wait_for_job remains conservative;
+# any state that should be treated as non-terminal must be listed here.
 _STATUS_MAP = {
+    # Non-terminal — pending/queued
     "PENDING": JobStatus.PENDING,
+    "CONFIGURING": JobStatus.PENDING,
+    "REQUEUED": JobStatus.PENDING,
+    # Non-terminal — running/active
     "RUNNING": JobStatus.RUNNING,
+    "RESIZING": JobStatus.RUNNING,
+    "SUSPENDED": JobStatus.RUNNING,
+    "COMPLETING": JobStatus.RUNNING,
+    # Terminal — success
     "COMPLETED": JobStatus.COMPLETED,
+    # Terminal — failure
     "FAILED": JobStatus.FAILED,
+    "BOOT_FAIL": JobStatus.FAILED,
+    "NODE_FAIL": JobStatus.FAILED,
+    "OUT_OF_MEMORY": JobStatus.FAILED,
+    # Terminal — cancelled
     "CANCELLED": JobStatus.CANCELLED,
+    "PREEMPTED": JobStatus.CANCELLED,
+    "REVOKED": JobStatus.CANCELLED,
+    # Terminal — timeout
     "TIMEOUT": JobStatus.TIMEOUT,
+    "DEADLINE": JobStatus.TIMEOUT,
 }
 
 
