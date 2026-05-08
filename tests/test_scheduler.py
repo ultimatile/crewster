@@ -173,6 +173,18 @@ class TestSlurmParseStatus:
         # even though OUT_OF_MEMORY is terminal failure.
         assert Slurm().parse_status(output) == JobStatus.PENDING
 
+    def test_cancelled_by_user_extended_form(self):
+        # With the widened State%30 column, sacct emits the full
+        # "CANCELLED by <uid>" form instead of truncating to "CANCELLED+".
+        # Taking the first whitespace-separated token reduces it to
+        # "CANCELLED" so the status map matches.
+        output = "CANCELLED by 12345\n"
+        assert Slurm().parse_status(output) == JobStatus.CANCELLED
+
+    def test_aggregate_with_cancelled_by_user(self):
+        output = "COMPLETED\nCOMPLETED\nCANCELLED by 12345\n"
+        assert Slurm().parse_status(output) == JobStatus.CANCELLED
+
 
 class TestPJMParseJobID:
     def test_parse_job_id_prefers_job_token(self):

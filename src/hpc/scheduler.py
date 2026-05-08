@@ -64,9 +64,14 @@ class Slurm(Scheduler):
         # only once every task is terminal. A single non-terminal task in
         # the set must keep the aggregate non-terminal to prevent
         # wait_for_job from exiting prematurely.
-        lines = [
-            ln.strip().rstrip("+") for ln in output.strip().splitlines() if ln.strip()
-        ]
+        # Normalize each row to its first whitespace-separated token so
+        # extended forms such as "CANCELLED by 12345" (emitted at the
+        # widened State%30 column) reduce to "CANCELLED".
+        lines = []
+        for ln in output.strip().splitlines():
+            tokens = ln.split()
+            if tokens:
+                lines.append(tokens[0].rstrip("+"))
         if not lines:
             return JobStatus.FAILED
         statuses = [_STATUS_MAP.get(s, JobStatus.FAILED) for s in lines]
