@@ -45,7 +45,19 @@ class Slurm(Scheduler):
         # -X suppresses jobsteps so each row is one allocation; for an array
         # job this yields exactly one row per task, which the aggregation
         # below relies on.
-        return ["sacct", "-j", job_id, "--format=State", "--noheader", "-X"]
+        # State%30 widens the column past sacct's 10-char default so that
+        # long state names (CONFIGURING, OUT_OF_MEMORY, ...) are not
+        # truncated to "CONFIGURI+" / "OUT_OF_ME+" — the truncation marker
+        # would survive rstrip("+") as a prefix that misses _STATUS_MAP and
+        # falls back to FAILED, exiting wait_for_job prematurely.
+        return [
+            "sacct",
+            "-j",
+            job_id,
+            "--format=State%30",
+            "--noheader",
+            "-X",
+        ]
 
     def parse_status(self, output: str) -> JobStatus:
         # Aggregate over all rows so an array job is reported as terminal

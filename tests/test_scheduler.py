@@ -16,6 +16,15 @@ class TestSlurmStatusCmd:
         assert "12345678" in cmd
         assert "--noheader" in cmd
 
+    def test_status_cmd_widens_state_column(self):
+        # sacct's default column width is 10 chars, which truncates long
+        # state names like CONFIGURING / OUT_OF_MEMORY into "CONFIGUR+" and
+        # silently maps them to FAILED via the unknown-state fallback.
+        # Pin the explicit width so the format never narrows back.
+        cmd = Slurm().status_cmd("12345678")
+
+        assert "--format=State%30" in cmd
+
 
 class TestSlurmParseStatus:
     # Single-line cases — preserves backward compat with single-job mocks
@@ -153,6 +162,15 @@ class TestSlurmParseStatus:
 
     def test_aggregate_pending_beats_failed_terminal(self):
         output = "FAILED\nPENDING\nCOMPLETED\n"
+        assert Slurm().parse_status(output) == JobStatus.PENDING
+
+    def test_padded_output_from_widened_state_column(self):
+        # sacct with --format=State%30 right-pads each row with spaces;
+        # the per-row strip() must reduce the padded value to its bare
+        # state name before the status-map lookup.
+        output = "CONFIGURING                   \nOUT_OF_MEMORY                 \n"
+        # CONFIGURING is non-terminal (PENDING); aggregate stays non-terminal
+        # even though OUT_OF_MEMORY is terminal failure.
         assert Slurm().parse_status(output) == JobStatus.PENDING
 
 
