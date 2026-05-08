@@ -140,3 +140,70 @@ def test_init_does_not_walk_up(cli_runner, temp_dir, monkeypatch):
     result = cli_runner.invoke(app, ["init"])
     assert result.exit_code == 0
     assert (child / "hpc.toml").exists()
+
+
+def test_job_output_follow_in_help(cli_runner):
+    result = cli_runner.invoke(app, ["job-output", "--help"])
+    assert result.exit_code == 0
+    assert "--follow" in result.stdout
+    assert "-f" in result.stdout
+
+
+def _setup_run_meta(temp_dir, run_id="r1", job_id="12345678"):
+    """Write hpc.toml + a fake run meta so job-output can resolve the run."""
+    (temp_dir / "hpc.toml").write_text("[cluster]\nhost = 'test'\nworkdir = '/tmp'\n")
+    runs_dir = temp_dir / ".hpc" / "runs" / run_id
+    runs_dir.mkdir(parents=True)
+    (runs_dir / "meta.toml").write_text(
+        f'run_id = "{run_id}"\n'
+        f'cmd = "echo hi"\n'
+        f'status = "running"\n'
+        f'job_id = "{job_id}"\n'
+    )
+
+
+def test_job_output_follow_passes_error_flag(cli_runner, temp_dir, monkeypatch):
+    monkeypatch.chdir(temp_dir)
+    _setup_run_meta(temp_dir)
+
+    with patch("hpc.cli.JobManager") as mock_job_cls:
+        mock_job = MagicMock()
+        mock_job.tail_job_output.return_value = 0
+        mock_job_cls.return_value = mock_job
+
+        result = cli_runner.invoke(app, ["job-output", "-f", "-e", "r1"])
+        assert result.exit_code == 0
+        mock_job.tail_job_output.assert_called_once_with("r1", "12345678", error=True)
+        mock_job.get_job_output.assert_not_called()
+
+
+def test_job_output_follow_propagates_exit_code(cli_runner, temp_dir, monkeypatch):
+    monkeypatch.chdir(temp_dir)
+    _setup_run_meta(temp_dir)
+
+    with patch("hpc.cli.JobManager") as mock_job_cls:
+        mock_job = MagicMock()
+        mock_job.tail_job_output.return_value = 130  # Ctrl-C
+        mock_job_cls.return_value = mock_job
+
+        result = cli_runner.invoke(app, ["job-output", "-f", "r1"])
+        assert result.exit_code == 130
+
+
+def test_job_output_without_follow_uses_get_job_output(
+    cli_runner, temp_dir, monkeypatch
+):
+    """Regression guard: --follow=False must still use the cat-based path."""
+    monkeypatch.chdir(temp_dir)
+    _setup_run_meta(temp_dir)
+
+    with patch("hpc.cli.JobManager") as mock_job_cls:
+        mock_job = MagicMock()
+        mock_job.get_job_output.return_value = "static output\n"
+        mock_job_cls.return_value = mock_job
+
+        result = cli_runner.invoke(app, ["job-output", "r1"])
+        assert result.exit_code == 0
+        mock_job.get_job_output.assert_called_once_with("r1", "12345678", error=False)
+        mock_job.tail_job_output.assert_not_called()
+        assert "static output" in result.stdout

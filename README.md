@@ -106,6 +106,16 @@ Accepts either run_id or job_id.
 hpc job-output 12345678
 ```
 
+Pass `--follow` / `-f` to stream the output of a running job in real time
+(equivalent to `tail -F` on the remote output file). Combine with `--error` /
+`-e` to follow stderr instead of stdout. For terminal-state jobs the command
+prints the final output and exits.
+
+```bash
+hpc job-output -f 12345678
+hpc job-output -f -e 12345678
+```
+
 ### `hpc wait`
 
 Waits for a run to complete.
