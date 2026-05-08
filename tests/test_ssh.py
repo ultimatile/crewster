@@ -131,3 +131,57 @@ class TestSSHManagerControlMaster:
             args_str = " ".join(call_args)
             assert "ControlMaster" in args_str
             assert "ControlPath" in args_str
+
+
+class TestSSHManagerRunStreaming:
+    def test_run_streaming_does_not_capture_output(self):
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            manager.run_streaming("tail", ["-F", "/some/file"])
+            call_kwargs = mock_run.call_args[1]
+            assert "capture_output" not in call_kwargs
+
+    def test_run_streaming_returns_exit_code(self):
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=130)
+            assert manager.run_streaming("tail", ["-F", "/path"]) == 130
+
+    def test_run_streaming_validates_command(self):
+        manager = SSHManager(host="myhpc")
+        with pytest.raises(ValueError):
+            manager.run_streaming("tail; rm -rf /", ["-F", "/path"])
+
+    def test_run_streaming_quotes_args(self):
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            manager.run_streaming("tail", ["-F", "/path with space/file"])
+            remote_cmd = mock_run.call_args[0][0][-1]
+            assert "'/path with space/file'" in remote_cmd
+
+    def test_run_streaming_includes_control_master(self):
+        manager = SSHManager(host="myhpc", use_control_master=True)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            manager.run_streaming("tail", ["-F", "/path"])
+            args_str = " ".join(mock_run.call_args[0][0])
+            assert "ControlMaster" in args_str
+            assert "ControlPath" in args_str
+
+    def test_run_streaming_builds_tail_command(self):
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            manager.run_streaming("tail", ["-F", "/path/file"])
+            remote_cmd = mock_run.call_args[0][0][-1]
+            assert remote_cmd == "tail -F /path/file"
+
+    def test_run_streaming_no_args(self):
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            manager.run_streaming("hostname")
+            remote_cmd = mock_run.call_args[0][0][-1]
+            assert remote_cmd == "hostname"

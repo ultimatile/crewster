@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hpc.job import JobManager, JobStatus
-from hpc.ssh import SSHManager
+from hpc.ssh import SSHManager, SSHError
 from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, PjmConfig
 
 
@@ -204,3 +204,80 @@ class TestJobManagerTemplate:
         assert "cd /scratch/user/proj/runs/bench1" in script
         # Output paths still use base workdir
         assert "--output=/scratch/user/proj/.hpc/runs/test_run" in script
+
+
+class TestJobManagerTailJobOutput:
+    def _running_status(self):
+        return MagicMock(stdout="RUNNING\n")
+
+    def _completed_status(self):
+        return MagicMock(stdout="COMPLETED\n")
+
+    def test_tail_job_output_active_uses_tail_F(self, mock_ssh_manager, sample_config):
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.return_value = self._running_status()
+        mock_ssh_manager.run_streaming.return_value = 0
+
+        rc = manager.tail_job_output("run_id", "12345678")
+
+        assert rc == 0
+        mock_ssh_manager.run_streaming.assert_called_once_with(
+            "tail",
+            ["-F", "/scratch/user/proj/.hpc/runs/run_id/job-12345678.out"],
+        )
+
+    def test_tail_job_output_terminal_falls_back_to_get_job_output(
+        self, mock_ssh_manager, sample_config, capsys
+    ):
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        # First call: status=COMPLETED (terminal). Second call: cat output.
+        mock_ssh_manager.run_command.side_effect = [
+            self._completed_status(),
+            MagicMock(stdout="final job output\n"),
+        ]
+
+        rc = manager.tail_job_output("run_id", "12345678")
+
+        assert rc == 0
+        mock_ssh_manager.run_streaming.assert_not_called()
+        captured = capsys.readouterr()
+        assert captured.out == "final job output\n"
+
+    def test_tail_job_output_unknown_status_streams(
+        self, mock_ssh_manager, sample_config
+    ):
+        """SSHError on get_job_status falls through to tail -F (safe-side default)."""
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.side_effect = SSHError("transient ssh failure")
+        mock_ssh_manager.run_streaming.return_value = 0
+
+        rc = manager.tail_job_output("run_id", "12345678")
+
+        assert rc == 0
+        mock_ssh_manager.run_streaming.assert_called_once()
+
+    def test_tail_job_output_error_flag_uses_err_extension(
+        self, mock_ssh_manager, sample_config
+    ):
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.return_value = self._running_status()
+        mock_ssh_manager.run_streaming.return_value = 0
+
+        manager.tail_job_output("run_id", "12345678", error=True)
+
+        call_args = mock_ssh_manager.run_streaming.call_args
+        assert call_args.args[0] == "tail"
+        assert call_args.args[1] == [
+            "-F",
+            "/scratch/user/proj/.hpc/runs/run_id/job-12345678.err",
+        ]
+
+    def test_tail_job_output_returns_streaming_exit_code(
+        self, mock_ssh_manager, sample_config
+    ):
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.return_value = self._running_status()
+        mock_ssh_manager.run_streaming.return_value = 130  # Ctrl-C exit code
+
+        rc = manager.tail_job_output("run_id", "12345678")
+        assert rc == 130

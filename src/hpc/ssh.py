@@ -128,3 +128,25 @@ class SSHManager:
             stdout=result.stdout,
             stderr=result.stderr,
         )
+
+    def run_streaming(
+        self,
+        cmd: str,
+        args: Optional[list[str]] = None,
+    ) -> int:
+        """Execute command on remote host, streaming stdout/stderr to terminal.
+
+        Mirrors run_command's argument shape and shell-injection defenses, but
+        does not capture output — the remote process writes directly to the
+        local terminal. Use for long-running, output-producing commands such
+        as `tail -F`. Returns the SSH process exit code; does not raise on
+        non-zero exit.
+        """
+        if args is None:
+            args = []
+        self._validate_command_name(cmd)
+        quoted_parts = [shlex.quote(cmd), *[shlex.quote(arg) for arg in args]]
+        command = " ".join(quoted_parts)
+
+        result = subprocess.run(self._build_ssh_command(command))
+        return result.returncode

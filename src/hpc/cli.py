@@ -344,6 +344,12 @@ def job_output(
     error: bool = typer.Option(
         False, "--error", "-e", help="Show stderr instead of stdout"
     ),
+    follow: bool = typer.Option(
+        False,
+        "--follow",
+        "-f",
+        help="Stream output as the job runs (tail -F equivalent)",
+    ),
     config: ConfigOption = None,
 ):
     """Show job output (accepts run_id or job_id)"""
@@ -368,6 +374,12 @@ def job_output(
 
     ssh = SSHManager(host=hpc_config.cluster.host)
     job_manager = JobManager(ssh_manager=ssh, config=hpc_config)
+
+    if follow:
+        rc = job_manager.tail_job_output(run.run_id, run.job_id, error=error)
+        if rc != 0:
+            raise typer.Exit(rc)
+        return
 
     output = job_manager.get_job_output(run.run_id, run.job_id, error=error)
     print(output, end="")

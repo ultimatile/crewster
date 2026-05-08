@@ -178,6 +178,36 @@ class JobManager:
                         return f"Job {job_id} is {status.value}. Output file not yet available.\n"
             raise
 
+    def tail_job_output(self, run_id: str, job_id: str, error: bool = False) -> int:
+        """Stream job output via `tail -F` (equivalent to live tailing).
+
+        For terminal-state jobs, falls back to `get_job_output` because no
+        further output is coming and `tail -F` would otherwise spin forever
+        on a missing file. For active or unknown-status jobs, runs `tail -F`
+        which retries internally until the output file appears.
+        """
+        from .ssh import SSHError
+
+        try:
+            status = self.get_job_status(job_id)
+        except SSHError:
+            status = None  # status unknown; fall through to tail -F
+
+        terminal_states = {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+            JobStatus.TIMEOUT,
+        }
+        if status in terminal_states:
+            print(self.get_job_output(run_id, job_id, error=error), end="")
+            return 0
+
+        workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
+        ext = "err" if error else "out"
+        output_path = f"{workdir}/.hpc/runs/{run_id}/job-{job_id}.{ext}"
+        return self.ssh_manager.run_streaming("tail", ["-F", output_path])
+
     def wait_for_job(
         self,
         job_id: str,
