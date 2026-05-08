@@ -47,14 +47,21 @@ def _extract_prologue_directives(content: str, prefix: str) -> tuple[list[str], 
     """Hoist scheduler directives from a user-supplied script's prologue.
 
     Mirrors the prologue-scan that sbatch and pjsub themselves perform:
-    starting from the top of `content`, accept only shebang, blank,
-    comment, and matching-prefix directive lines; stop at the first
-    non-comment, non-blank executable line and leave everything from
-    there onward untouched. Directive lines are matched at column zero
-    with ``^<prefix>\\b`` (matching the schedulers' own column-zero
-    rule) and removed from the body. A leading ``#!`` shebang line, if
-    present, is dropped because the rendered job-script template
-    injects its own.
+    starting from the top of `content`, accept only shebang, truly-blank
+    (``\\n`` / ``\\r\\n``), column-zero comment (``#...``), and column-
+    zero matching-prefix directive lines; stop at the first line that
+    is none of those (executable, indented comment, or whitespace-only)
+    and leave everything from there onward untouched. Treating indented
+    comments and whitespace-only lines as scan-terminating — rather
+    than as bash-style blanks/comments — is intentional: the schedulers
+    themselves are column-sensitive, so being any more permissive would
+    cause ``hpc submit -s script.sh`` to honor directives that
+    ``sbatch script.sh`` standalone would have ignored.
+
+    Directive lines are matched at column zero with ``^<prefix>\\b`` and
+    removed from the body. A leading ``#!`` shebang line, if present,
+    is dropped because the rendered job-script template injects its
+    own.
 
     Without this hoist, directives written inside user scripts land
     after the template's ``cd workdir`` and env-setup lines and are
@@ -79,17 +86,17 @@ def _extract_prologue_directives(content: str, prefix: str) -> tuple[list[str], 
 
     for line in lines[start:]:
         if in_prologue:
-            stripped = line.strip()
-            if not stripped:
+            if line in ("\n", "\r\n"):
                 body_parts.append(line)
             elif directive_re.match(line):
                 directives.append(line.rstrip("\r\n"))
-            elif stripped.startswith("#"):
-                # Non-directive comment (any indent): bash treats it as
-                # a comment and the scheduler's prologue scan skips it,
-                # so we keep it in the body and continue scanning.
+            elif line.startswith("#"):
+                # Column-zero non-directive comment: scheduler skips it
+                # and the prologue scan continues.
                 body_parts.append(line)
             else:
+                # Anything else — executable, indented comment, or
+                # whitespace-only — terminates the prologue scan.
                 in_prologue = False
                 body_parts.append(line)
         else:

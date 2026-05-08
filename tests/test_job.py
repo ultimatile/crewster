@@ -406,12 +406,39 @@ class TestExtractPrologueDirectives:
         assert body == "# user explanation\necho hi\n"
 
     def test_indented_directive_not_hoisted(self):
-        # Schedulers require column-zero `#SBATCH`; indented lines are
-        # bash comments, not directives.
+        # Schedulers require column-zero `#SBATCH`; an indented line is
+        # not a directive, and being non-blank-non-column-zero-comment
+        # it also terminates the prologue scan.
         content = "#!/bin/bash\n  #SBATCH --partition=gpu\necho hi\n"
         directives, body = _extract_prologue_directives(content, "#SBATCH")
         assert directives == []
         assert body == "  #SBATCH --partition=gpu\necho hi\n"
+
+    def test_indented_comment_terminates_prologue(self):
+        # An indented `# comment` is bash-style comment but not a
+        # column-zero comment; the schedulers stop scanning at this
+        # line, so a directive following it is not hoisted (matching
+        # what `sbatch script.sh` standalone would do).
+        content = "#!/bin/bash\n  # indented comment\n#SBATCH --array=1-5\necho hi\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == []
+        assert body == "  # indented comment\n#SBATCH --array=1-5\necho hi\n"
+
+    def test_whitespace_only_line_terminates_prologue(self):
+        # A line containing only whitespace (not a true `\n`-only blank)
+        # is treated as scan-terminating, matching the schedulers'
+        # column-sensitive prologue rule.
+        content = "#!/bin/bash\n   \n#SBATCH --array=1-5\necho hi\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == []
+        assert body == "   \n#SBATCH --array=1-5\necho hi\n"
+
+    def test_crlf_blank_line_kept_in_prologue(self):
+        # Truly-blank lines (`\n` or `\r\n`) do not terminate the scan.
+        content = "#!/bin/bash\r\n\r\n#SBATCH --array=1-5\r\necho hi\r\n"
+        directives, body = _extract_prologue_directives(content, "#SBATCH")
+        assert directives == ["#SBATCH --array=1-5"]
+        assert body == "\r\necho hi\r\n"
 
     def test_no_trailing_newline_preserved(self):
         directives, body = _extract_prologue_directives("echo hi", "#SBATCH")
