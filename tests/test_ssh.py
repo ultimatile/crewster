@@ -185,3 +185,11 @@ class TestSSHManagerRunStreaming:
             manager.run_streaming("hostname")
             remote_cmd = mock_run.call_args[0][0][-1]
             assert remote_cmd == "hostname"
+
+    def test_run_streaming_returns_130_on_keyboard_interrupt(self):
+        """Ctrl-C during streaming: subprocess.run re-raises KeyboardInterrupt;
+        we convert to the conventional SIGINT exit code so Typer does not abort.
+        """
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run", side_effect=KeyboardInterrupt):
+            assert manager.run_streaming("tail", ["-F", "/path"]) == 130

@@ -141,6 +141,11 @@ class SSHManager:
         local terminal. Use for long-running, output-producing commands such
         as `tail -F`. Returns the SSH process exit code; does not raise on
         non-zero exit.
+
+        On Ctrl-C, both Python and the SSH client receive SIGINT (foreground
+        process group). subprocess.run kills + reaps the child and re-raises
+        KeyboardInterrupt; we convert that to the conventional shell exit
+        code 130 so callers can propagate cleanly without aborting.
         """
         if args is None:
             args = []
@@ -148,5 +153,8 @@ class SSHManager:
         quoted_parts = [shlex.quote(cmd), *[shlex.quote(arg) for arg in args]]
         command = " ".join(quoted_parts)
 
-        result = subprocess.run(self._build_ssh_command(command))
+        try:
+            result = subprocess.run(self._build_ssh_command(command))
+        except KeyboardInterrupt:
+            return 130
         return result.returncode
