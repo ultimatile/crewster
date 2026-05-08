@@ -71,6 +71,98 @@ def test_status_command_exists(cli_runner):
     assert result.exit_code == 0
 
 
+def test_status_prints_sacct_fields_for_terminal_job(cli_runner, temp_dir, monkeypatch):
+    """Terminal Slurm jobs show ExitCode/Elapsed/MaxRSS/ReqMem in addition to state."""
+    from hpc.scheduler import JobDetail
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = JobDetail(
+            state="OUT_OF_MEMORY",
+            exit_code="0:125",
+            elapsed="00:01:23",
+            max_rss="1024K",
+            req_mem="16Gn",
+        )
+        result = cli_runner.invoke(app, ["status", "12345678"])
+
+    assert result.exit_code == 0
+    assert "Job 12345678: OUT_OF_MEMORY" in result.stdout
+    assert "ExitCode: 0:125" in result.stdout
+    assert "Elapsed:  00:01:23" in result.stdout
+    assert "MaxRSS:   1024K" in result.stdout
+    assert "ReqMem:   16Gn" in result.stdout
+
+
+def test_status_omits_sacct_fields_for_running_job(cli_runner, temp_dir, monkeypatch):
+    """Running jobs print only the state line; runtime fields are not yet meaningful."""
+    from hpc.scheduler import JobDetail
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = JobDetail(
+            state="RUNNING",
+            exit_code="0:0",
+            elapsed="00:00:30",
+            max_rss="",
+            req_mem="16Gn",
+        )
+        result = cli_runner.invoke(app, ["status", "12345678"])
+
+    assert result.exit_code == 0
+    assert "Job 12345678: RUNNING" in result.stdout
+    assert "ExitCode" not in result.stdout
+    assert "Elapsed" not in result.stdout
+
+
+def test_status_falls_back_when_detail_unavailable(cli_runner, temp_dir, monkeypatch):
+    """PJM (and not-yet-recorded jobs) fall back to the single-line display."""
+    from hpc.job import JobStatus
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = None
+        instance.get_job_status.return_value = JobStatus.PENDING
+        result = cli_runner.invoke(app, ["status", "12345678"])
+
+    assert result.exit_code == 0
+    assert "Job 12345678: PENDING" in result.stdout
+    assert "ExitCode" not in result.stdout
+
+
+def test_status_normalizes_decorated_cancelled_state(cli_runner, temp_dir, monkeypatch):
+    """``CANCELLED+`` and ``CANCELLED by 12345`` should still trigger detail rendering."""
+    from hpc.scheduler import JobDetail
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = JobDetail(
+            state="CANCELLED by 12345",
+            exit_code="0:15",
+            elapsed="00:00:42",
+            max_rss="",
+            req_mem="8Gn",
+        )
+        result = cli_runner.invoke(app, ["status", "12345678"])
+
+    assert result.exit_code == 0
+    assert "Job 12345678: CANCELLED by 12345" in result.stdout
+    assert "ExitCode: 0:15" in result.stdout
+    assert "MaxRSS:   -" in result.stdout
+
+
 def test_config_option(cli_runner, temp_dir, monkeypatch):
     """Test --config option loads specified config file"""
     monkeypatch.chdir(temp_dir)

@@ -1,6 +1,6 @@
 """Scheduler unit tests."""
 
-from hpc.scheduler import PJM, Slurm, JobStatus
+from hpc.scheduler import PJM, JobDetail, JobStatus, Slurm
 
 
 class TestSlurmStatusCmd:
@@ -207,3 +207,112 @@ class TestPJMParseJobID:
         output = " unexpected output "
 
         assert scheduler.parse_job_id(output) == "unexpected output"
+
+
+class TestSlurmDetailCmd:
+    def test_detail_cmd_includes_required_format_and_parsable_flag(self):
+        cmd = Slurm().detail_cmd("12345")
+        assert cmd is not None
+        assert cmd[0] == "sacct"
+        assert "12345" in cmd
+        assert "--format=JobID,State,ExitCode,Elapsed,MaxRSS,ReqMem" in cmd
+        assert "--noheader" in cmd
+        assert "-P" in cmd
+
+
+class TestSlurmParseDetail:
+    def test_parse_typical_three_row_output(self):
+        # parent (MaxRSS empty) + .batch (carries MaxRSS) + .extern.
+        output = (
+            "12345|COMPLETED|0:0|00:01:23||16Gn\n"
+            "12345.batch|COMPLETED|0:0|00:01:23|1024K|16Gn\n"
+            "12345.extern|COMPLETED|0:0|00:01:23|0|16Gn\n"
+        )
+        detail = Slurm().parse_detail(output)
+        assert detail == JobDetail(
+            state="COMPLETED",
+            exit_code="0:0",
+            elapsed="00:01:23",
+            max_rss="1024K",
+            req_mem="16Gn",
+        )
+
+    def test_parse_picks_step_max_rss_when_no_batch_row(self):
+        output = (
+            "12345|COMPLETED|0:0|00:00:42||8Gn\n"
+            "12345.0|COMPLETED|0:0|00:00:42|512K|8Gn\n"
+        )
+        detail = Slurm().parse_detail(output)
+        assert detail is not None
+        assert detail.max_rss == "512K"
+
+    def test_parse_picks_largest_max_rss_across_srun_steps(self):
+        # MPI / GPU jobs that dispatch via `srun` put the real workload RSS
+        # on numbered step rows; `.batch` only reflects the launcher.
+        output = (
+            "12345|COMPLETED|0:0|01:23:45||64Gn\n"
+            "12345.batch|COMPLETED|0:0|01:23:45|10M|64Gn\n"
+            "12345.0|COMPLETED|0:0|01:23:45|2500M|64Gn\n"
+            "12345.extern|COMPLETED|0:0|01:23:45|0|64Gn\n"
+        )
+        detail = Slurm().parse_detail(output)
+        assert detail is not None
+        assert detail.max_rss == "2500M"
+
+    def test_parse_compares_max_rss_unit_aware(self):
+        # 1G must beat 999M even though "1G" sorts before "999M" lexically.
+        output = (
+            "12345|COMPLETED|0:0|00:10:00||16Gn\n"
+            "12345.batch|COMPLETED|0:0|00:10:00|999M|16Gn\n"
+            "12345.0|COMPLETED|0:0|00:10:00|1G|16Gn\n"
+        )
+        detail = Slurm().parse_detail(output)
+        assert detail is not None
+        assert detail.max_rss == "1G"
+
+    def test_parse_tolerates_trailing_pipe_from_parsable_mode(self):
+        output = "12345|COMPLETED|0:0|00:00:10||4Gn|\n12345.batch|COMPLETED|0:0|00:00:10|256K|4Gn|\n"
+        detail = Slurm().parse_detail(output)
+        assert detail == JobDetail(
+            state="COMPLETED",
+            exit_code="0:0",
+            elapsed="00:00:10",
+            max_rss="256K",
+            req_mem="4Gn",
+        )
+
+    def test_parse_preserves_raw_oom_state(self):
+        output = "12345|OUT_OF_MEMORY|0:125|00:00:05||4Gn\n"
+        detail = Slurm().parse_detail(output)
+        assert detail is not None
+        assert detail.state == "OUT_OF_MEMORY"
+
+    def test_parse_preserves_decorated_cancelled_state(self):
+        output = "12345|CANCELLED+|0:0|00:00:03||4Gn\n"
+        detail = Slurm().parse_detail(output)
+        assert detail is not None
+        assert detail.state == "CANCELLED+"
+
+    def test_parse_empty_output_returns_none(self):
+        assert Slurm().parse_detail("") is None
+        assert Slurm().parse_detail("\n\n") is None
+
+    def test_parse_no_parent_row_returns_none(self):
+        # Only step rows present, no parent row -> cannot identify primary state.
+        output = "12345.batch|COMPLETED|0:0|00:00:05|256K|4Gn\n"
+        assert Slurm().parse_detail(output) is None
+
+    def test_parse_skips_short_rows(self):
+        # A malformed row (too few fields) is dropped, parent row still wins.
+        output = "broken\n12345|COMPLETED|0:0|00:00:05||4Gn\n"
+        detail = Slurm().parse_detail(output)
+        assert detail is not None
+        assert detail.state == "COMPLETED"
+
+
+class TestPJMDetailNotSupported:
+    def test_pjm_detail_cmd_returns_none(self):
+        assert PJM().detail_cmd("12345") is None
+
+    def test_pjm_parse_detail_returns_none(self):
+        assert PJM().parse_detail("anything") is None
