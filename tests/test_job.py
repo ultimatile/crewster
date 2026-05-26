@@ -244,6 +244,70 @@ class TestJobManagerTemplate:
         # Output paths still use base workdir
         assert "--output=/scratch/user/proj/.hpc/runs/test_run" in script
 
+    def test_render_job_script_pjm_emits_pjm_output_directives(self, mock_ssh_manager):
+        """PJM jobs must emit ``#PJM -o`` / ``#PJM -e`` for the bookkeeping
+        output paths, not the Slurm-shaped ``--output=`` / ``--error=``
+        that pjsub does not honor."""
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=12"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
+        script = manager._render_job_script(run)
+
+        assert "#PJM -o /scratch/user/proj/.hpc/runs/test_run/job.out" in script
+        assert "#PJM -e /scratch/user/proj/.hpc/runs/test_run/job.err" in script
+        # Disconfirming: the Slurm-shaped forms (the original bug) must
+        # not leak into a PJM-rendered script.
+        assert "--output=" not in script
+        assert "--error=" not in script
+
+
+class TestJobManagerGetJobOutput:
+    """Path resolution in ``get_job_output`` routes through
+    ``scheduler.output_path`` so PJM (fixed names) and Slurm
+    (``job-<id>`` names) both work."""
+
+    def test_pjm_uses_fixed_filename(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="hello\n")
+
+        out = manager.get_job_output("test_run", "12345678")
+
+        assert out == "hello\n"
+        call_args = mock_ssh_manager.run_command.call_args
+        assert call_args.args[0] == "cat"
+        assert call_args.args[1] == ["/scratch/user/proj/.hpc/runs/test_run/job.out"]
+
+    def test_pjm_error_flag_uses_err_extension(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="oops\n")
+
+        manager.get_job_output("test_run", "12345678", error=True)
+
+        call_args = mock_ssh_manager.run_command.call_args
+        assert call_args.args[1] == ["/scratch/user/proj/.hpc/runs/test_run/job.err"]
+
 
 class TestJobManagerTailJobOutput:
     def _running_status(self):
@@ -320,6 +384,29 @@ class TestJobManagerTailJobOutput:
 
         rc = manager.tail_job_output("run_id", "12345678")
         assert rc == 130
+
+    def test_tail_job_output_pjm_uses_fixed_filename(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        # ``pjstat --choose st`` emits one column: header ``ST`` then the
+        # status token. Non-terminal status makes ``tail_job_output`` take
+        # the streaming path rather than falling back to ``get_job_output``.
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="ST\nRUN\n")
+        mock_ssh_manager.run_streaming.return_value = 0
+
+        rc = manager.tail_job_output("test_run", "12345678")
+
+        assert rc == 0
+        mock_ssh_manager.run_streaming.assert_called_once_with(
+            "tail",
+            ["-F", "/scratch/user/proj/.hpc/runs/test_run/job.out"],
+        )
 
 
 class TestExtractPrologueDirectives:
