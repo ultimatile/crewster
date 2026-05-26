@@ -80,6 +80,65 @@ class TestJobManagerSubmit:
         assert call_args.args[0] == "pjsub"
         assert "--no-check-directory" in call_args.args[1]
 
+    def test_submit_job_creates_run_dir_before_submission(self, mock_ssh_manager):
+        # The rendered script's ``-o`` / ``--output=`` directives point
+        # under ``<workdir>/.hpc/runs/job/``; the scheduler must be able
+        # to open those paths, so the directory has to exist when pjsub /
+        # sbatch consumes the script.
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(
+            stdout="[INFO] PJM 0000 pjsub Job 12345678 submitted.\n"
+        )
+
+        manager.submit_job("python train.py")
+
+        calls = mock_ssh_manager.run_command.call_args_list
+        mkdir_idx = next((i for i, c in enumerate(calls) if c.args[0] == "mkdir"), None)
+        submit_idx = next(
+            (i for i, c in enumerate(calls) if c.args[0] == "pjsub"), None
+        )
+        assert mkdir_idx is not None, "submit_job must mkdir -p its run_dir"
+        assert submit_idx is not None, "submit_job must invoke pjsub"
+        # Ordering matters: pjsub opens the directives' output paths,
+        # so the directory must exist before pjsub runs.
+        assert mkdir_idx < submit_idx
+        assert calls[mkdir_idx].args[1] == [
+            "-p",
+            "/scratch/user/proj/.hpc/runs/job",
+        ]
+
+    def test_submit_job_creates_run_dir_before_submission_slurm(self, mock_ssh_manager):
+        # Same pair-invariant as the PJM variant: the contract holds for
+        # every scheduler the legacy path can target, not only PJM.
+        config = HpcConfig(
+            cluster=ClusterConfig(host="myhpc", workdir="/scratch/user/proj"),
+            env=EnvConfig(),
+            slurm=SlurmConfig(options={"partition": "gpu"}),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="12345678\n")
+
+        manager.submit_job("python train.py")
+
+        calls = mock_ssh_manager.run_command.call_args_list
+        mkdir_idx = next((i for i, c in enumerate(calls) if c.args[0] == "mkdir"), None)
+        submit_idx = next(
+            (i for i, c in enumerate(calls) if c.args[0] == "sbatch"), None
+        )
+        assert mkdir_idx is not None and submit_idx is not None
+        assert mkdir_idx < submit_idx
+        assert calls[mkdir_idx].args[1] == [
+            "-p",
+            "/scratch/user/proj/.hpc/runs/job",
+        ]
+
     def test_submit_job_includes_slurm_submit_options(self, mock_ssh_manager):
         config = HpcConfig(
             cluster=ClusterConfig(host="myhpc", workdir="/scratch/user/proj"),
@@ -122,6 +181,67 @@ class TestJobManagerSubmit:
         call_args = mock_ssh_manager.run_command.call_args
         assert call_args.args[0] == "pjsub"
         assert "--no-check-directory" in call_args.args[1]
+
+    def test_submit_run_creates_run_dir_before_submission(self, mock_ssh_manager):
+        # Pair-invariant: every submission path's rendered script directs
+        # the scheduler's stdout/stderr under ``run_dir``, so ``run_dir``
+        # must exist before the scheduler is invoked. Asserting the mkdir
+        # call protects the pair from regressing in either submission
+        # path.
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(
+            stdout="[INFO] PJM 0000 pjsub Job 12345678 submitted.\n"
+        )
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
+        manager.submit_run(run)
+
+        calls = mock_ssh_manager.run_command.call_args_list
+        mkdir_idx = next((i for i, c in enumerate(calls) if c.args[0] == "mkdir"), None)
+        submit_idx = next(
+            (i for i, c in enumerate(calls) if c.args[0] == "pjsub"), None
+        )
+        assert mkdir_idx is not None, "submit_run must mkdir -p its run_dir"
+        assert submit_idx is not None, "submit_run must invoke pjsub"
+        assert mkdir_idx < submit_idx
+        assert calls[mkdir_idx].args[1] == [
+            "-p",
+            "/scratch/user/proj/.hpc/runs/test_run",
+        ]
+
+    def test_submit_run_creates_run_dir_before_submission_slurm(self, mock_ssh_manager):
+        # Pair-invariant holds for Slurm submissions too.
+        config = HpcConfig(
+            cluster=ClusterConfig(host="myhpc", workdir="/scratch/user/proj"),
+            env=EnvConfig(),
+            slurm=SlurmConfig(options={"partition": "gpu"}),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="12345678\n")
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
+        manager.submit_run(run)
+
+        calls = mock_ssh_manager.run_command.call_args_list
+        mkdir_idx = next((i for i, c in enumerate(calls) if c.args[0] == "mkdir"), None)
+        submit_idx = next(
+            (i for i, c in enumerate(calls) if c.args[0] == "sbatch"), None
+        )
+        assert mkdir_idx is not None and submit_idx is not None
+        assert mkdir_idx < submit_idx
+        assert calls[mkdir_idx].args[1] == [
+            "-p",
+            "/scratch/user/proj/.hpc/runs/test_run",
+        ]
 
     def test_submit_run_includes_slurm_submit_options(self, mock_ssh_manager):
         config = HpcConfig(
@@ -244,6 +364,70 @@ class TestJobManagerTemplate:
         # Output paths still use base workdir
         assert "--output=/scratch/user/proj/.hpc/runs/test_run" in script
 
+    def test_render_job_script_pjm_emits_pjm_output_directives(self, mock_ssh_manager):
+        """PJM jobs must emit ``#PJM -o`` / ``#PJM -e`` for the bookkeeping
+        output paths, not the Slurm-shaped ``--output=`` / ``--error=``
+        that pjsub does not honor."""
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=12"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
+        script = manager._render_job_script(run)
+
+        assert "#PJM -o /scratch/user/proj/.hpc/runs/test_run/job.out" in script
+        assert "#PJM -e /scratch/user/proj/.hpc/runs/test_run/job.err" in script
+        # Disconfirming: the Slurm-shaped forms (the original bug) must
+        # not leak into a PJM-rendered script.
+        assert "--output=" not in script
+        assert "--error=" not in script
+
+
+class TestJobManagerGetJobOutput:
+    """Path resolution in ``get_job_output`` routes through
+    ``scheduler.output_path`` so PJM (fixed names) and Slurm
+    (``job-<id>`` names) both work."""
+
+    def test_pjm_uses_fixed_filename(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="hello\n")
+
+        out = manager.get_job_output("test_run", "12345678")
+
+        assert out == "hello\n"
+        call_args = mock_ssh_manager.run_command.call_args
+        assert call_args.args[0] == "cat"
+        assert call_args.args[1] == ["/scratch/user/proj/.hpc/runs/test_run/job.out"]
+
+    def test_pjm_error_flag_uses_err_extension(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="oops\n")
+
+        manager.get_job_output("test_run", "12345678", error=True)
+
+        call_args = mock_ssh_manager.run_command.call_args
+        assert call_args.args[1] == ["/scratch/user/proj/.hpc/runs/test_run/job.err"]
+
 
 class TestJobManagerTailJobOutput:
     def _running_status(self):
@@ -320,6 +504,29 @@ class TestJobManagerTailJobOutput:
 
         rc = manager.tail_job_output("run_id", "12345678")
         assert rc == 130
+
+    def test_tail_job_output_pjm_uses_fixed_filename(self, mock_ssh_manager):
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        # ``pjstat --choose st`` emits one column: header ``ST`` then the
+        # status token. Non-terminal status makes ``tail_job_output`` take
+        # the streaming path rather than falling back to ``get_job_output``.
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="ST\nRUN\n")
+        mock_ssh_manager.run_streaming.return_value = 0
+
+        rc = manager.tail_job_output("test_run", "12345678")
+
+        assert rc == 0
+        mock_ssh_manager.run_streaming.assert_called_once_with(
+            "tail",
+            ["-F", "/scratch/user/proj/.hpc/runs/test_run/job.out"],
+        )
 
 
 class TestExtractPrologueDirectives:

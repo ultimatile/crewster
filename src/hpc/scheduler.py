@@ -69,6 +69,25 @@ class Scheduler(ABC):
     @abstractmethod
     def parse_status(self, output: str) -> JobStatus: ...
 
+    @abstractmethod
+    def output_directives(self, run_dir: str) -> list[str]:
+        """Bookkeeping directives that route the job's stdout/stderr under
+        ``run_dir``. Each scheduler's emitted path must be the one
+        ``output_path`` returns; the two methods share one source of truth
+        per scheduler so the directive write target and the JobManager read
+        target stay in sync."""
+        ...
+
+    @abstractmethod
+    def output_path(self, run_dir: str, job_id: str, error: bool = False) -> str:
+        """The on-disk path produced by ``output_directives``.
+
+        Mirrors directive semantics so ``JobManager.get_job_output`` /
+        ``tail_job_output`` can read the file back. Schedulers whose
+        directives are job-id-independent (PJM with fixed names) ignore
+        the ``job_id`` argument."""
+        ...
+
     def detail_cmd(self, job_id: str) -> list[str] | None:
         """Command that fetches detailed accounting info, or None if unsupported."""
         return None
@@ -81,6 +100,16 @@ class Scheduler(ABC):
 class Slurm(Scheduler):
     def directive_prefix(self) -> str:
         return "#SBATCH"
+
+    def output_directives(self, run_dir: str) -> list[str]:
+        return [
+            f"#SBATCH --output={run_dir}/job-%j.out",
+            f"#SBATCH --error={run_dir}/job-%j.err",
+        ]
+
+    def output_path(self, run_dir: str, job_id: str, error: bool = False) -> str:
+        ext = "err" if error else "out"
+        return f"{run_dir}/job-{job_id}.{ext}"
 
     def submit_cmd(self) -> list[str]:
         return ["sbatch", "--parsable"]
@@ -209,6 +238,23 @@ class PJM(Scheduler):
 
     def directive_prefix(self) -> str:
         return "#PJM -L"
+
+    def output_directives(self, run_dir: str) -> list[str]:
+        # pjsub's ``-o`` / ``-e`` use the path argument literally; no
+        # ``%j`` / ``%J`` substitution comparable to Slurm is part of the
+        # documented behavior, so fixed filenames are used and the caller
+        # is responsible for choosing a ``run_dir`` that disambiguates
+        # across submissions.
+        return [
+            f"#PJM -o {run_dir}/job.out",
+            f"#PJM -e {run_dir}/job.err",
+        ]
+
+    def output_path(self, run_dir: str, job_id: str, error: bool = False) -> str:
+        # ``job_id`` is not part of the path because the directive uses a
+        # literal fixed name. Accepted to match the Scheduler signature.
+        ext = "err" if error else "out"
+        return f"{run_dir}/job.{ext}"
 
     def submit_cmd(self) -> list[str]:
         return ["pjsub"]

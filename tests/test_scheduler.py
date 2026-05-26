@@ -316,3 +316,81 @@ class TestPJMDetailNotSupported:
 
     def test_pjm_parse_detail_returns_none(self):
         assert PJM().parse_detail("anything") is None
+
+
+class TestSlurmOutput:
+    def test_output_directives_contains_sbatch_output_and_error(self):
+        directives = Slurm().output_directives("/run")
+        assert directives == [
+            "#SBATCH --output=/run/job-%j.out",
+            "#SBATCH --error=/run/job-%j.err",
+        ]
+
+    def test_output_path_default_uses_out_extension(self):
+        assert Slurm().output_path("/run", "42") == "/run/job-42.out"
+
+    def test_output_path_error_flag_uses_err_extension(self):
+        assert Slurm().output_path("/run", "42", error=True) == "/run/job-42.err"
+
+
+class TestPJMOutput:
+    def test_output_directives_emits_pjm_o_and_e(self):
+        directives = PJM().output_directives("/run")
+        assert directives == ["#PJM -o /run/job.out", "#PJM -e /run/job.err"]
+
+    def test_output_directives_does_not_emit_slurm_form(self):
+        # Disconfirming check: a regression that re-emits Slurm-shaped
+        # ``#PJM --output=...`` / ``#PJM --error=...`` (which pjsub does
+        # not honor) trips this assertion.
+        for d in PJM().output_directives("/run"):
+            assert "--output=" not in d
+            assert "--error=" not in d
+
+    def test_output_path_default_uses_out_extension(self):
+        assert PJM().output_path("/run", "42") == "/run/job.out"
+
+    def test_output_path_error_flag_uses_err_extension(self):
+        assert PJM().output_path("/run", "42", error=True) == "/run/job.err"
+
+    def test_output_path_ignores_job_id(self):
+        # PJM directives emit a fixed name, so different job ids must
+        # resolve to the same on-disk path — keeps the directive write
+        # target and the JobManager read target in sync.
+        assert PJM().output_path("/run", "1") == PJM().output_path("/run", "999")
+
+
+class TestSchedulerOutputDirectiveContract:
+    """Each scheduler's ``output_directives`` writes to the path that
+    ``output_path`` returns — verified by substituting Slurm's ``%j``
+    placeholder into the emitted directive and asserting the result
+    matches ``output_path``."""
+
+    def _emitted_path(self, scheduler, run_dir: str, job_id: str, error: bool) -> str:
+        # Pick the directive that carries either ``--output``/``--error``
+        # (Slurm) or ``-o``/``-e`` (PJM), substitute Slurm's ``%j`` with
+        # ``job_id``, and return the path operand.
+        directives = scheduler.output_directives(run_dir)
+        wants_err = error
+        for directive in directives:
+            sub = directive.replace("%j", job_id)
+            if " --output=" in sub or sub.endswith(".out") or " -o " in sub:
+                if not wants_err:
+                    return sub.split("=", 1)[1] if "=" in sub else sub.split()[-1]
+            if " --error=" in sub or sub.endswith(".err") or " -e " in sub:
+                if wants_err:
+                    return sub.split("=", 1)[1] if "=" in sub else sub.split()[-1]
+        raise AssertionError(f"no matching directive: {directives}")
+
+    def test_slurm_directive_path_matches_output_path(self):
+        slurm = Slurm()
+        for error in (False, True):
+            assert self._emitted_path(slurm, "/run", "42", error) == slurm.output_path(
+                "/run", "42", error=error
+            )
+
+    def test_pjm_directive_path_matches_output_path(self):
+        pjm = PJM()
+        for error in (False, True):
+            assert self._emitted_path(pjm, "/run", "42", error) == pjm.output_path(
+                "/run", "42", error=error
+            )

@@ -30,8 +30,9 @@ JOB_TEMPLATE = """#!/bin/bash
 {% for directive in user_directives %}
 {{ directive }}
 {% endfor %}
-{{ scheduler.directive_prefix().split()[0] }} --output={{ workdir }}/.hpc/runs/{{ run_id }}/job-%j.out
-{{ scheduler.directive_prefix().split()[0] }} --error={{ workdir }}/.hpc/runs/{{ run_id }}/job-%j.err
+{% for directive in output_directives %}
+{{ directive }}
+{% endfor %}
 
 cd {{ job_workdir }}
 
@@ -152,6 +153,7 @@ class JobManager:
         template = Template(JOB_TEMPLATE)
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
         job_workdir = str(Path(workdir) / cwd_relative)
+        run_dir = f"{workdir}/.hpc/runs/{run.run_id}"
         options = (
             self.config.pjm.options
             if self.config.cluster.scheduler == "pjm"
@@ -165,6 +167,7 @@ class JobManager:
             run_id=run.run_id,
             directives=directives,
             user_directives=user_directives,
+            output_directives=self.scheduler.output_directives(run_dir),
             scheduler=self.scheduler,
             workdir=workdir,
             job_workdir=job_workdir,
@@ -191,9 +194,16 @@ class JobManager:
         return self.scheduler.parse_job_id(result.stdout)
 
     def submit_job(self, cmd: str) -> str:
-        """Legacy: Submit job without run tracking"""
+        """Legacy: Submit job without run tracking.
+
+        For PJM, output filenames are fixed (``job.out`` / ``job.err``)
+        because the legacy path hard-codes ``run_id="job"``; repeated
+        calls overwrite previous output. Slurm submissions still
+        disambiguate via ``%j`` substitution in the output directive.
+        """
         template = Template(JOB_TEMPLATE)
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
+        run_dir = f"{workdir}/.hpc/runs/job"
         options = (
             self.config.pjm.options
             if self.config.cluster.scheduler == "pjm"
@@ -208,12 +218,17 @@ class JobManager:
             run_id="job",
             directives=directives,
             user_directives=user_directives,
+            output_directives=self.scheduler.output_directives(run_dir),
             scheduler=self.scheduler,
             workdir=workdir,
             job_workdir=workdir,
             setup_commands=setup_commands,
             cmd=body,
         )
+        # The rendered script's output directives point under ``run_dir``;
+        # ensure that directory exists before submission so the scheduler
+        # can open its stdout/stderr targets.
+        self.ssh_manager.run_command("mkdir", ["-p", run_dir])
         submit_cmd = self.scheduler.submit_cmd()
         submit_options = self._get_submit_options()
         result = self.ssh_manager.run_command(
@@ -240,8 +255,8 @@ class JobManager:
         from .ssh import SSHError
 
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
-        ext = "err" if error else "out"
-        output_path = f"{workdir}/.hpc/runs/{run_id}/job-{job_id}.{ext}"
+        run_dir = f"{workdir}/.hpc/runs/{run_id}"
+        output_path = self.scheduler.output_path(run_dir, job_id, error=error)
 
         try:
             result = self.ssh_manager.run_command("cat", [output_path])
@@ -284,8 +299,8 @@ class JobManager:
             return 0
 
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
-        ext = "err" if error else "out"
-        output_path = f"{workdir}/.hpc/runs/{run_id}/job-{job_id}.{ext}"
+        run_dir = f"{workdir}/.hpc/runs/{run_id}"
+        output_path = self.scheduler.output_path(run_dir, job_id, error=error)
         return self.ssh_manager.run_streaming("tail", ["-F", output_path])
 
     def wait_for_job(
