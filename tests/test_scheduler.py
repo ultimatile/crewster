@@ -254,6 +254,13 @@ class TestPJMParseStatus:
         output = f"{self._HEADER}48971221   RUN 0   0\n48971222   EXT 0   0\n"
         assert PJM().parse_status(output) == JobStatus.RUNNING
 
+    def test_short_row_skipped_before_data_row(self):
+        # Lines with fewer than four whitespace-separated tokens are
+        # not valid data rows (e.g. transient diagnostic text or a
+        # partial line); the parser must skip them and continue.
+        output = f"{self._HEADER}short\n48971221   EXT 0   0\n"
+        assert PJM().parse_status(output) == JobStatus.COMPLETED
+
 
 class TestPJMParseJobID:
     def test_parse_job_id_prefers_job_token(self):
