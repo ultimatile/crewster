@@ -186,6 +186,82 @@ class TestSlurmParseStatus:
         assert Slurm().parse_status(output) == JobStatus.CANCELLED
 
 
+class TestPJMStatusCmd:
+    def test_status_cmd_requests_ec_and_sn_columns(self):
+        # EC and SN are required to distinguish a successful EXT
+        # (EC=0 and SN=0) from an abnormal one; a bare ``st`` column
+        # cannot. ``-H`` is omitted intentionally so currently-active
+        # jobs are still listed.
+        assert PJM().status_cmd("12345") == [
+            "pjstat",
+            "-v",
+            "--choose",
+            "jid,st,ec,sn",
+            "12345",
+        ]
+
+
+class TestPJMParseStatus:
+    _HEADER = "JOB_ID     ST  EC  SN\n"
+
+    def _row(self, st: str, ec: str = "0", sn: str = "0") -> str:
+        return f"{self._HEADER}48971221   {st} {ec}   {sn}\n"
+
+    def test_que_maps_to_pending(self):
+        assert PJM().parse_status(self._row("QUE")) == JobStatus.PENDING
+
+    def test_run_maps_to_running(self):
+        assert PJM().parse_status(self._row("RUN")) == JobStatus.RUNNING
+
+    def test_ext_with_zero_ec_and_sn_maps_to_completed(self):
+        assert PJM().parse_status(self._row("EXT", "0", "0")) == JobStatus.COMPLETED
+
+    def test_ext_with_nonzero_ec_maps_to_failed(self):
+        # User script exited non-zero; PJM still reports ST=EXT because
+        # the scheduler observed a normal exit-syscall path, but the
+        # user-visible result is a failure.
+        assert PJM().parse_status(self._row("EXT", "1", "0")) == JobStatus.FAILED
+
+    def test_ext_with_signal_maps_to_failed(self):
+        # Job killed by SIGKILL (or similar); ST=EXT, SN!=0.
+        assert PJM().parse_status(self._row("EXT", "0", "9")) == JobStatus.FAILED
+
+    def test_err_maps_to_failed(self):
+        assert PJM().parse_status(self._row("ERR")) == JobStatus.FAILED
+
+    def test_ccl_maps_to_cancelled(self):
+        assert PJM().parse_status(self._row("CCL")) == JobStatus.CANCELLED
+
+    def test_rjt_maps_to_failed(self):
+        assert PJM().parse_status(self._row("RJT")) == JobStatus.FAILED
+
+    def test_empty_output_falls_back_to_failed(self):
+        # Regression guard for the deferred Issue #8: today, empty
+        # pjstat output is conflated with a true failure. The eventual
+        # fix should be a deliberate behavior change rather than an
+        # accidental one.
+        assert PJM().parse_status("") == JobStatus.FAILED
+
+    def test_header_only_output_falls_back_to_failed(self):
+        # Same deferred-#8 guard, header-only shape: ``pjstat`` exited
+        # cleanly but produced no data row (job aged out of the active
+        # view's post-EXT window).
+        assert PJM().parse_status(self._HEADER) == JobStatus.FAILED
+
+    def test_multi_row_input_takes_first_parseable_row(self):
+        # Documents today's single-row semantics so the eventual array
+        # / step-job aggregation fix (Issue #12) is a deliberate change.
+        output = f"{self._HEADER}48971221   RUN 0   0\n48971222   EXT 0   0\n"
+        assert PJM().parse_status(output) == JobStatus.RUNNING
+
+    def test_short_row_skipped_before_data_row(self):
+        # Lines with fewer than four whitespace-separated tokens are
+        # not valid data rows (e.g. transient diagnostic text or a
+        # partial line); the parser must skip them and continue.
+        output = f"{self._HEADER}short\n48971221   EXT 0   0\n"
+        assert PJM().parse_status(output) == JobStatus.COMPLETED
+
+
 class TestPJMParseJobID:
     def test_parse_job_id_prefers_job_token(self):
         scheduler = PJM()
