@@ -76,6 +76,15 @@ def _skill_callback(value: bool):
     raise typer.Exit()
 
 
+def _version_callback(value: bool):
+    if not value:
+        return
+    from importlib import metadata
+
+    print(f"hpc {metadata.version('hpc')}")
+    raise typer.Exit()
+
+
 @app.callback()
 def app_callback(
     skill: bool = typer.Option(
@@ -85,6 +94,14 @@ def app_callback(
         callback=_skill_callback,
         is_eager=True,
         help="Print CLI reference for SKILL.md",
+    ),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Print version and exit",
     ),
 ):
     pass
