@@ -221,6 +221,14 @@ class Slurm(Scheduler):
 
 
 class PJM(Scheduler):
+    # ``ST`` is only a coarse classification of the scheduler-side state.
+    # ``EXT`` in particular means "exited", which covers both successful and
+    # abnormal completions; ``parse_status`` consults ``EC`` and ``SN``
+    # before applying the mapping for that case. The ``"EXT"`` entry is
+    # retained here to document the bare-``ST`` semantics and so that any
+    # future caller that reads the map directly still classifies it as a
+    # terminal state, but normal status resolution goes through
+    # ``parse_status``.
     _STATUS_MAP = {
         "ACC": JobStatus.PENDING,
         "QUE": JobStatus.PENDING,
@@ -273,12 +281,37 @@ class PJM(Scheduler):
         return output.strip()
 
     def status_cmd(self, job_id: str) -> list[str]:
-        return ["pjstat", "--choose", "st", job_id]
+        # Request ``ST`` together with ``EC`` (exit code) and ``SN``
+        # (terminating signal). With ``ST=EXT`` alone, a successful exit
+        # (``EC=0, SN=0``) and an abnormal one (``EC!=0`` or ``SN!=0``)
+        # are indistinguishable, so ``parse_status`` cannot surface
+        # script failures without these extra columns. ``-H`` is
+        # deliberately omitted: the default non-history view briefly
+        # retains ``EXT`` after completion, so a single query covers
+        # both active and just-completed jobs, whereas ``-H`` would hide
+        # currently-active jobs.
+        return ["pjstat", "-v", "--choose", "jid,st,ec,sn", job_id]
 
     def parse_status(self, output: str) -> JobStatus:
-        lines = output.strip().splitlines()
-        status_str = lines[1].strip() if len(lines) >= 2 else ""
-        return self._STATUS_MAP.get(status_str, JobStatus.FAILED)
+        # Expected output shape (header row + one data row per job):
+        #     JOB_ID     ST  EC  SN
+        #     48969021   EXT 0   0
+        # The first parseable row wins; multi-row aggregation for array
+        # / step jobs is tracked separately (Issue #12) and out of scope
+        # here. An empty / header-only response falls back to ``FAILED``,
+        # the same fallback the pre-EC/SN parser used (Issue #8 owns
+        # the principled fix).
+        for raw in output.splitlines():
+            tokens = raw.split()
+            if len(tokens) < 4 or tokens[0] == "JOB_ID":
+                continue
+            st, ec, sn = tokens[1], tokens[2], tokens[3]
+            if st == "EXT":
+                return (
+                    JobStatus.COMPLETED if ec == "0" and sn == "0" else JobStatus.FAILED
+                )
+            return self._STATUS_MAP.get(st, JobStatus.FAILED)
+        return JobStatus.FAILED
 
 
 # Slurm job state strings as reported by `sacct`. Unknown states fall back

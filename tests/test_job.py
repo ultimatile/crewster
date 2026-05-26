@@ -514,10 +514,13 @@ class TestJobManagerTailJobOutput:
             pjm=PjmConfig(options=[["-L", "node=1"]]),
         )
         manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
-        # ``pjstat --choose st`` emits one column: header ``ST`` then the
-        # status token. Non-terminal status makes ``tail_job_output`` take
-        # the streaming path rather than falling back to ``get_job_output``.
-        mock_ssh_manager.run_command.return_value = MagicMock(stdout="ST\nRUN\n")
+        # ``pjstat -v --choose jid,st,ec,sn`` emits a header row followed
+        # by one data row per job. A non-terminal ST makes
+        # ``tail_job_output`` take the streaming path rather than falling
+        # back to ``get_job_output``.
+        mock_ssh_manager.run_command.return_value = MagicMock(
+            stdout="JOB_ID ST EC SN\n12345678 RUN 0 0\n"
+        )
         mock_ssh_manager.run_streaming.return_value = 0
 
         rc = manager.tail_job_output("test_run", "12345678")
