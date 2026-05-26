@@ -225,6 +225,10 @@ class JobManager:
             setup_commands=setup_commands,
             cmd=body,
         )
+        # The rendered script's output directives point under ``run_dir``;
+        # ensure that directory exists before submission so the scheduler
+        # can open its stdout/stderr targets.
+        self.ssh_manager.run_command("mkdir", ["-p", run_dir])
         submit_cmd = self.scheduler.submit_cmd()
         submit_options = self._get_submit_options()
         result = self.ssh_manager.run_command(

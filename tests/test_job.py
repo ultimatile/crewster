@@ -80,6 +80,36 @@ class TestJobManagerSubmit:
         assert call_args.args[0] == "pjsub"
         assert "--no-check-directory" in call_args.args[1]
 
+    def test_submit_job_creates_run_dir_before_submission(self, mock_ssh_manager):
+        # The rendered script's ``-o`` / ``--output=`` directives point
+        # under ``<workdir>/.hpc/runs/job/``; the scheduler must be able
+        # to open those paths, so the directory has to exist when pjsub /
+        # sbatch consumes the script.
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(
+            stdout="[INFO] PJM 0000 pjsub Job 12345678 submitted.\n"
+        )
+
+        manager.submit_job("python train.py")
+
+        mkdir_calls = [
+            call
+            for call in mock_ssh_manager.run_command.call_args_list
+            if call.args[0] == "mkdir"
+        ]
+        assert mkdir_calls, "submit_job must mkdir -p its run_dir"
+        assert mkdir_calls[0].args[1] == [
+            "-p",
+            "/scratch/user/proj/.hpc/runs/job",
+        ]
+
     def test_submit_job_includes_slurm_submit_options(self, mock_ssh_manager):
         config = HpcConfig(
             cluster=ClusterConfig(host="myhpc", workdir="/scratch/user/proj"),
