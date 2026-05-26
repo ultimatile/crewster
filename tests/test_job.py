@@ -99,13 +99,42 @@ class TestJobManagerSubmit:
 
         manager.submit_job("python train.py")
 
-        mkdir_calls = [
-            call
-            for call in mock_ssh_manager.run_command.call_args_list
-            if call.args[0] == "mkdir"
+        calls = mock_ssh_manager.run_command.call_args_list
+        mkdir_idx = next((i for i, c in enumerate(calls) if c.args[0] == "mkdir"), None)
+        submit_idx = next(
+            (i for i, c in enumerate(calls) if c.args[0] == "pjsub"), None
+        )
+        assert mkdir_idx is not None, "submit_job must mkdir -p its run_dir"
+        assert submit_idx is not None, "submit_job must invoke pjsub"
+        # Ordering matters: pjsub opens the directives' output paths,
+        # so the directory must exist before pjsub runs.
+        assert mkdir_idx < submit_idx
+        assert calls[mkdir_idx].args[1] == [
+            "-p",
+            "/scratch/user/proj/.hpc/runs/job",
         ]
-        assert mkdir_calls, "submit_job must mkdir -p its run_dir"
-        assert mkdir_calls[0].args[1] == [
+
+    def test_submit_job_creates_run_dir_before_submission_slurm(self, mock_ssh_manager):
+        # Same pair-invariant as the PJM variant: the contract holds for
+        # every scheduler the legacy path can target, not only PJM.
+        config = HpcConfig(
+            cluster=ClusterConfig(host="myhpc", workdir="/scratch/user/proj"),
+            env=EnvConfig(),
+            slurm=SlurmConfig(options={"partition": "gpu"}),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="12345678\n")
+
+        manager.submit_job("python train.py")
+
+        calls = mock_ssh_manager.run_command.call_args_list
+        mkdir_idx = next((i for i, c in enumerate(calls) if c.args[0] == "mkdir"), None)
+        submit_idx = next(
+            (i for i, c in enumerate(calls) if c.args[0] == "sbatch"), None
+        )
+        assert mkdir_idx is not None and submit_idx is not None
+        assert mkdir_idx < submit_idx
+        assert calls[mkdir_idx].args[1] == [
             "-p",
             "/scratch/user/proj/.hpc/runs/job",
         ]
@@ -152,6 +181,67 @@ class TestJobManagerSubmit:
         call_args = mock_ssh_manager.run_command.call_args
         assert call_args.args[0] == "pjsub"
         assert "--no-check-directory" in call_args.args[1]
+
+    def test_submit_run_creates_run_dir_before_submission(self, mock_ssh_manager):
+        # Pair-invariant: every submission path's rendered script directs
+        # the scheduler's stdout/stderr under ``run_dir``, so ``run_dir``
+        # must exist before the scheduler is invoked. Asserting the mkdir
+        # call protects the pair from regressing in either submission
+        # path.
+        config = HpcConfig(
+            cluster=ClusterConfig(
+                host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+            ),
+            env=EnvConfig(),
+            pjm=PjmConfig(options=[["-L", "node=1"]]),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(
+            stdout="[INFO] PJM 0000 pjsub Job 12345678 submitted.\n"
+        )
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
+        manager.submit_run(run)
+
+        calls = mock_ssh_manager.run_command.call_args_list
+        mkdir_idx = next((i for i, c in enumerate(calls) if c.args[0] == "mkdir"), None)
+        submit_idx = next(
+            (i for i, c in enumerate(calls) if c.args[0] == "pjsub"), None
+        )
+        assert mkdir_idx is not None, "submit_run must mkdir -p its run_dir"
+        assert submit_idx is not None, "submit_run must invoke pjsub"
+        assert mkdir_idx < submit_idx
+        assert calls[mkdir_idx].args[1] == [
+            "-p",
+            "/scratch/user/proj/.hpc/runs/test_run",
+        ]
+
+    def test_submit_run_creates_run_dir_before_submission_slurm(self, mock_ssh_manager):
+        # Pair-invariant holds for Slurm submissions too.
+        config = HpcConfig(
+            cluster=ClusterConfig(host="myhpc", workdir="/scratch/user/proj"),
+            env=EnvConfig(),
+            slurm=SlurmConfig(options={"partition": "gpu"}),
+        )
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="12345678\n")
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
+        manager.submit_run(run)
+
+        calls = mock_ssh_manager.run_command.call_args_list
+        mkdir_idx = next((i for i, c in enumerate(calls) if c.args[0] == "mkdir"), None)
+        submit_idx = next(
+            (i for i, c in enumerate(calls) if c.args[0] == "sbatch"), None
+        )
+        assert mkdir_idx is not None and submit_idx is not None
+        assert mkdir_idx < submit_idx
+        assert calls[mkdir_idx].args[1] == [
+            "-p",
+            "/scratch/user/proj/.hpc/runs/test_run",
+        ]
 
     def test_submit_run_includes_slurm_submit_options(self, mock_ssh_manager):
         config = HpcConfig(
