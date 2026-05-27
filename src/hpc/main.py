@@ -1,23 +1,28 @@
 """HPC CLI entry point"""
 
 import typer
-from click import Argument, Group, Option
 
 app = typer.Typer(help="HPC job execution support tool")
 
 
 def _generate_skill_reference(cli_app: typer.Typer) -> str:
     """Generate markdown CLI reference from Typer app metadata for use in SKILL.md."""
-    click_app = typer.main.get_command(cli_app)
-    assert isinstance(click_app, Group)
+    # typer 0.26+ vendored click as `typer._click`; use Typer's wrapper classes so
+    # this stays correct without depending on the external `click` package.
+    from typer.core import TyperArgument, TyperGroup, TyperOption
+
+    typer_group = typer.main.get_command(cli_app)
+    assert isinstance(typer_group, TyperGroup)
     lines = ["## Commands", ""]
-    for name, cmd in sorted(click_app.commands.items()):
+    for name, cmd in sorted(typer_group.commands.items()):
         lines.append(f"### `hpc {name}`")
         if cmd.help:
             lines.append(cmd.help)
-        params = [p for p in cmd.params if not isinstance(p, Argument) or p.required]
-        args = [p for p in params if isinstance(p, Argument)]
-        opts = [p for p in params if isinstance(p, Option) and p.name != "help"]
+        params = [
+            p for p in cmd.params if not isinstance(p, TyperArgument) or p.required
+        ]
+        args = [p for p in params if isinstance(p, TyperArgument)]
+        opts = [p for p in params if isinstance(p, TyperOption) and p.name != "help"]
         if args:
             for arg in args:
                 type_name = arg.type.name.upper() if arg.type else ""
