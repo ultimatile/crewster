@@ -452,7 +452,10 @@ class TestJobManagerGetJobOutput:
         # diagnostic, not the inner accounting-not-ready one.
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
         mock_ssh_manager.run_command.side_effect = [
-            SSHError("SSH command failed: cat: No such file or directory"),
+            SSHError(
+                "SSH command failed (exit 1): cat /scratch/user/proj/.hpc/runs/test_run/job-12345678.out\n"
+                "stderr:\ncat: No such file or directory"
+            ),
             MagicMock(stdout=""),  # status probe; parse_status raises SchedulerError
         ]
 
