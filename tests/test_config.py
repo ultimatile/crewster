@@ -210,6 +210,44 @@ partition = "gpu"
         assert "[env]" in content
         assert "[slurm.options]" in content
 
+    def test_generate_template_pjm(self, temp_dir):
+        """``scheduler="pjm"`` emits a PJM-shaped template."""
+        manager = ConfigManager()
+        config_path = temp_dir / "hpc.toml"
+        manager.generate_template(config_path, scheduler="pjm")
+
+        assert config_path.exists()
+        content = config_path.read_text()
+        assert "[cluster]" in content
+        assert 'scheduler = "pjm"' in content
+        assert "[pjm]" in content
+        assert "[slurm" not in content
+
+        # Round-trip through load_config so the dispatch path is exercised.
+        loaded = manager.load_config(config_path)
+        assert loaded.cluster.scheduler == "pjm"
+        assert loaded.pjm.options
+        assert loaded.slurm.options == {}
+
+    def test_generate_template_rejects_unknown_scheduler(self, temp_dir):
+        """Library-level guard against bypassing the CLI's enum constraint."""
+        manager = ConfigManager()
+        config_path = temp_dir / "hpc.toml"
+        with pytest.raises(ValueError, match="Unknown scheduler"):
+            manager.generate_template(config_path, scheduler="lsf")
+        assert not config_path.exists()
+
+    def test_generate_template_slurm_includes_explicit_scheduler_field(self, temp_dir):
+        """``scheduler="slurm"`` writes the field explicitly even though it is
+        the ``ClusterConfig`` default, so the file is symmetric across
+        schedulers."""
+        manager = ConfigManager()
+        config_path = temp_dir / "hpc.toml"
+        manager.generate_template(config_path, scheduler="slurm")
+
+        content = config_path.read_text()
+        assert 'scheduler = "slurm"' in content
+
 
 class TestFindConfig:
     def test_find_config_in_cwd(self, temp_dir, monkeypatch):

@@ -46,8 +46,13 @@ hpc job-output 12345678
 Creates `hpc.toml` configuration file in the current directory.
 
 ```bash
-hpc init
+hpc init                      # Slurm template (default)
+hpc init --scheduler pjm      # PJM-oriented template
 ```
+
+`--scheduler` selects which scheduler-specific section is written. The default is `slurm`.
+
+When `$XDG_CONFIG_HOME/hpc/config.toml` exists, it is used as the source instead of the built-in template. See [User-level XDG config](#user-level-xdg-config) for the filter-merge semantics.
 
 ### `hpc sync`
 
@@ -259,7 +264,15 @@ options = [
 ]
 ```
 
-`$XDG_CONFIG_HOME/hpc/config.toml` (default: `~/.config/hpc/config.toml`) will be copied as `hpc.toml` if it exists when running `hpc init`.
+### User-level XDG config
+
+`$XDG_CONFIG_HOME/hpc/config.toml` (default: `~/.config/hpc/config.toml`), when present, is used as the source for `hpc init` instead of the built-in template. The file is filter-merged onto the chosen scheduler:
+
+- The inactive scheduler's top-level section (`[pjm]` under `--scheduler slurm`, `[slurm]` under `--scheduler pjm`) is dropped.
+- `cluster.scheduler` is forced to match the `--scheduler` argument.
+- All other sections (including unknown ones) are preserved verbatim.
+
+The source XDG file is not modified. This lets the XDG file carry both `[slurm]` and `[pjm]` sections side by side so that `hpc init --scheduler {slurm,pjm}` projects out the active half.
 
 ## Requirements
 

@@ -185,30 +185,68 @@ class ConfigManager:
             ),
         )
 
-    def generate_template(self, path: Path) -> None:
-        """Generate template configuration file"""
-        template = {
-            "cluster": {
-                "host": "myhpc",
-                "workdir": "/scratch/${USER}/myproj",
-            },
-            "env": {
-                "modules": ["gcc/12.2.0", "cuda/12.2"],
-            },
-            "sync": {
-                "ignore": ["hpc.toml", ".git"],
-                "ignore_push": [".hpc"],
-            },
-            "slurm": {
-                "submit_options": [],
-                "options": {
-                    "partition": "gpu",
-                    "time": "02:00:00",
-                    "mem": "32G",
-                    "gpus": 1,
-                    "account": "myaccount",
+    def generate_template(self, path: Path, scheduler: str = "slurm") -> None:
+        """Generate template configuration file for the given scheduler.
+
+        ``scheduler`` selects which scheduler-specific section is emitted.
+        ``cluster.scheduler`` is written explicitly so the file is symmetric
+        across schedulers even though ``ClusterConfig.scheduler`` defaults
+        to ``"slurm"``.
+
+        Unknown values raise ``ValueError`` rather than silently emitting a
+        Slurm-shaped template, so library callers that bypass the CLI's
+        ``SchedulerChoice`` constraint cannot slip through with a typo.
+        """
+        if scheduler not in {"slurm", "pjm"}:
+            raise ValueError(f"Unknown scheduler: {scheduler!r}")
+        if scheduler == "pjm":
+            template = {
+                "cluster": {
+                    "host": "myhpc",
+                    "workdir": "/scratch/${USER}/myproj",
+                    "scheduler": "pjm",
                 },
-            },
-        }
+                "env": {
+                    "modules": ["gcc/12.2.0"],
+                },
+                "sync": {
+                    "ignore": ["hpc.toml", ".git"],
+                    "ignore_push": [".hpc"],
+                },
+                "pjm": {
+                    "submit_options": [],
+                    "options": [
+                        ["-L", "node=1"],
+                        ["-L", "rscgrp=small"],
+                        ["-L", "elapse=02:00:00"],
+                        ["-g", "myaccount"],
+                    ],
+                },
+            }
+        else:
+            template = {
+                "cluster": {
+                    "host": "myhpc",
+                    "workdir": "/scratch/${USER}/myproj",
+                    "scheduler": "slurm",
+                },
+                "env": {
+                    "modules": ["gcc/12.2.0", "cuda/12.2"],
+                },
+                "sync": {
+                    "ignore": ["hpc.toml", ".git"],
+                    "ignore_push": [".hpc"],
+                },
+                "slurm": {
+                    "submit_options": [],
+                    "options": {
+                        "partition": "gpu",
+                        "time": "02:00:00",
+                        "mem": "32G",
+                        "gpus": 1,
+                        "account": "myaccount",
+                    },
+                },
+            }
         with open(path, "wb") as f:
             tomli_w.dump(template, f)
