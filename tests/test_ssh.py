@@ -83,6 +83,78 @@ class TestSSHManagerRunCommand:
             with pytest.raises(SSHError):
                 manager.run_command("echo", ["hello"])
 
+    def test_run_command_failure_includes_exit_code_and_command(self):
+        # The message always contains the exit code and the executed
+        # remote command so callers can locate which invocation failed
+        # without re-running with extra logging.
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=42, stdout="", stderr="boom")
+            with pytest.raises(SSHError) as exc_info:
+                manager.run_command("echo", ["hello"])
+            msg = str(exc_info.value)
+            assert msg.startswith("SSH command failed (exit 42):")
+            assert "echo hello" in msg
+
+    def test_run_command_failure_with_only_stderr_omits_stdout_section(self):
+        # Typical SSH-transport / cat-missing-file failure: only stderr
+        # carries the diagnostic. The empty stdout section must be
+        # omitted so the message stays readable.
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="cat: /missing: No such file or directory\n",
+            )
+            with pytest.raises(SSHError) as exc_info:
+                manager.run_command("cat", ["/missing"])
+            msg = str(exc_info.value)
+            assert "stderr:\ncat: /missing: No such file or directory" in msg
+            assert "stdout:" not in msg
+
+    def test_run_command_failure_with_only_stdout_surfaces_it(self):
+        # pjsub rejections and other tools that emit error text on stdout
+        # used to vanish behind an empty trailing colon. The enriched
+        # message must include the stdout section so the diagnostic is
+        # visible to the caller.
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="[ERR.] PJM 0000 pjsub Invalid option specified\n",
+                stderr="",
+            )
+            with pytest.raises(SSHError) as exc_info:
+                manager.run_command("pjsub", ["bad.sh"])
+            msg = str(exc_info.value)
+            assert "stdout:\n[ERR.] PJM 0000 pjsub Invalid option specified" in msg
+            assert "stderr:" not in msg
+
+    def test_run_command_failure_with_both_streams_includes_both(self):
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=2, stdout="partial output\n", stderr="warning then error\n"
+            )
+            with pytest.raises(SSHError) as exc_info:
+                manager.run_command("some_cmd")
+            msg = str(exc_info.value)
+            assert "stdout:\npartial output" in msg
+            assert "stderr:\nwarning then error" in msg
+
+    def test_run_command_failure_with_empty_streams_keeps_command_and_code(self):
+        # Boundary case: command failed but produced no output. The
+        # message must still be informative — exit code and command name
+        # remain — even though there is nothing else to surface.
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=255, stdout="", stderr="")
+            with pytest.raises(SSHError) as exc_info:
+                manager.run_command("hostname")
+            msg = str(exc_info.value)
+            assert msg == "SSH command failed (exit 255): hostname"
+
     def test_run_command_captures_stderr(self):
         manager = SSHManager(host="myhpc")
         with patch("subprocess.run") as mock_run:

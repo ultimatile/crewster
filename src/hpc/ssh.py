@@ -121,7 +121,17 @@ class SSHManager:
         )
 
         if result.returncode != 0:
-            raise SSHError(f"SSH command failed: {result.stderr}")
+            # Include exit code, the executed remote command, and both
+            # streams so tools that emit diagnostics on stdout (e.g. pjsub
+            # rejections, anything printing `[ERR.] ...` on stdout) are
+            # not silently swallowed. Empty sections are omitted to keep
+            # the common stderr-only case readable.
+            parts = [f"SSH command failed (exit {result.returncode}): {command}"]
+            if result.stdout:
+                parts.append(f"stdout:\n{result.stdout.rstrip()}")
+            if result.stderr:
+                parts.append(f"stderr:\n{result.stderr.rstrip()}")
+            raise SSHError("\n".join(parts))
 
         return CommandResult(
             returncode=result.returncode,
