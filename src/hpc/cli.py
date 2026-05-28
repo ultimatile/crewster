@@ -14,6 +14,7 @@ from .ssh import SSHManager
 from .sync import SyncManager
 from .job import JobManager, JobStatus
 from .run import RunManager
+from .scheduler import SchedulerError
 
 # Type alias for config option
 ConfigOption = Annotated[
@@ -345,7 +346,16 @@ def status(id: str = typer.Argument(None), config: ConfigOption = None):
     if detail is None or not detail.state:
         # Scheduler does not support detail (PJM), or sacct has not yet
         # recorded this job. Fall back to the existing single-line display.
-        job_status = job_manager.get_job_status(job_id)
+        # SchedulerError (parse-side absence) becomes a friendly message;
+        # other SSHError (real transport/command failure) propagates so
+        # legitimate failures stay visible to the user.
+        try:
+            job_status = job_manager.get_job_status(job_id)
+        except SchedulerError:
+            print(
+                f"Job {job_id}: status unavailable yet (scheduler accounting not ready)"
+            )
+            return
         print(f"Job {job_id}: {job_status.value}")
         return
 

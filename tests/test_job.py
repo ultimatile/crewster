@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hpc.job import JobManager, JobStatus, _extract_prologue_directives
-from hpc.scheduler import JobDetail
+from hpc.scheduler import JobDetail, SchedulerError
 from hpc.ssh import SSHManager, SSHError
 from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, PjmConfig
 
@@ -290,6 +290,19 @@ class TestJobManagerStatus:
         assert "12345678" in call_args.args[1]
         assert "--noheader" in call_args.args[1]
 
+    def test_get_job_status_raises_scheduler_error_on_empty_output(
+        self, mock_ssh_manager, sample_config
+    ):
+        # Boundary pin: the SchedulerError raised by parse_status reaches
+        # JobManager's public API unchanged (no conversion to a different
+        # type). Since SchedulerError is an SSHError subclass, the three
+        # transient-handling callers still catch it via `except SSHError`.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="")
+
+        with pytest.raises(SchedulerError):
+            manager.get_job_status("12345678")
+
 
 class TestJobManagerDetail:
     def test_get_job_detail_slurm_invokes_sacct_and_returns_detail(
@@ -427,6 +440,26 @@ class TestJobManagerGetJobOutput:
 
         call_args = mock_ssh_manager.run_command.call_args
         assert call_args.args[1] == ["/scratch/user/proj/.hpc/runs/test_run/job.err"]
+
+    def test_inner_scheduler_error_does_not_mask_original_no_such_file(
+        self, mock_ssh_manager, sample_config
+    ):
+        # Regression guard: when ``cat`` raises "No such file" and the
+        # inner status probe raises SchedulerError (job not yet indexed),
+        # the existing ``except SSHError: pass`` swallows the inner
+        # SchedulerError (subclass of SSHError) and re-raises the original
+        # cat error. The user must see the original missing-file
+        # diagnostic, not the inner accounting-not-ready one.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.side_effect = [
+            SSHError("SSH command failed: cat: No such file or directory"),
+            MagicMock(stdout=""),  # status probe; parse_status raises SchedulerError
+        ]
+
+        with pytest.raises(SSHError) as exc_info:
+            manager.get_job_output("test_run", "12345678")
+        assert "No such file" in str(exc_info.value)
+        assert not isinstance(exc_info.value, SchedulerError)
 
 
 class TestJobManagerTailJobOutput:
