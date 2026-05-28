@@ -139,6 +139,29 @@ def test_status_falls_back_when_detail_unavailable(cli_runner, temp_dir, monkeyp
     assert "ExitCode" not in result.stdout
 
 
+def test_status_prints_friendly_message_when_status_unavailable(
+    cli_runner, temp_dir, monkeypatch
+):
+    """SchedulerError on the fallback ``get_job_status`` becomes a friendly
+    "status unavailable yet" line instead of an SSHError stack."""
+    from hpc.scheduler import SchedulerError
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = None
+        instance.get_job_status.side_effect = SchedulerError(
+            "sacct returned no data row"
+        )
+        result = cli_runner.invoke(app, ["status", "12345678"])
+
+    assert result.exit_code == 0
+    assert "Job 12345678: status unavailable yet" in result.stdout
+    assert "scheduler accounting not ready" in result.stdout
+
+
 def test_status_normalizes_decorated_cancelled_state(cli_runner, temp_dir, monkeypatch):
     """``CANCELLED+`` and ``CANCELLED by 12345`` should still trigger detail rendering."""
     from hpc.scheduler import JobDetail

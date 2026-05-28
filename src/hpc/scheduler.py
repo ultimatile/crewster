@@ -5,6 +5,31 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 
+from .ssh import SSHError
+
+
+class SchedulerError(SSHError):
+    """Scheduler returned no usable response.
+
+    Raised by ``parse_status`` when the scheduler's status command exits
+    cleanly but its output contains no data row from which a ``JobStatus``
+    can be derived — typically a freshly-submitted job that has not yet
+    been indexed by the accounting database (Slurm's ``sacct``) or a job
+    that aged out of the active view (PJM's ``pjstat`` post-``EXT``
+    window). Distinguishing this from a real ``JobStatus.FAILED`` lets
+    callers retry / fall through instead of treating the absence of
+    information as a terminal failure.
+
+    Inherits from ``SSHError`` so the three existing transient-catch
+    sites in ``JobManager`` cover it without modification:
+    ``wait_for_job``'s polling loop (continues), ``tail_job_output``'s
+    pre-tail status probe (falls through to ``tail -F``), and the inner
+    status probe inside ``get_job_output`` (swallows so the original
+    "No such file" diagnostic re-raises). CLI surfaces that want to
+    discriminate "no data yet" from a real SSH / command failure catch
+    ``SchedulerError`` specifically before the generic ``SSHError``.
+    """
+
 
 class JobStatus(Enum):
     PENDING = "PENDING"
@@ -149,7 +174,12 @@ class Slurm(Scheduler):
             if tokens:
                 lines.append(tokens[0].rstrip("+"))
         if not lines:
-            return JobStatus.FAILED
+            # No parseable row — sacct has not yet indexed the job (fresh
+            # submission, accounting lag). Surface as a transient absence
+            # rather than synthesizing a terminal FAILED.
+            raise SchedulerError(
+                "sacct returned no data row; job may not yet be indexed"
+            )
         statuses = [_STATUS_MAP.get(s, JobStatus.FAILED) for s in lines]
         for status in (
             JobStatus.RUNNING,
@@ -298,9 +328,9 @@ class PJM(Scheduler):
         #     48969021   EXT 0   0
         # The first parseable row wins; multi-row aggregation for array
         # / step jobs is tracked separately (Issue #12) and out of scope
-        # here. An empty / header-only response falls back to ``FAILED``,
-        # the same fallback the pre-EC/SN parser used (Issue #8 owns
-        # the principled fix).
+        # here. An empty / header-only / short-row-only response raises
+        # ``SchedulerError`` so callers can distinguish "no data yet"
+        # from a real terminal failure.
         for raw in output.splitlines():
             tokens = raw.split()
             if len(tokens) < 4 or tokens[0] == "JOB_ID":
@@ -311,7 +341,10 @@ class PJM(Scheduler):
                     JobStatus.COMPLETED if ec == "0" and sn == "0" else JobStatus.FAILED
                 )
             return self._STATUS_MAP.get(st, JobStatus.FAILED)
-        return JobStatus.FAILED
+        raise SchedulerError(
+            "pjstat returned no data row; job may not yet be indexed"
+            " or has aged out of the active view"
+        )
 
 
 # Slurm job state strings as reported by `sacct`. Unknown states fall back

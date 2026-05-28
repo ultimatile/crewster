@@ -1,6 +1,9 @@
 """Scheduler unit tests."""
 
-from hpc.scheduler import PJM, JobDetail, JobStatus, Slurm
+import pytest
+
+from hpc.scheduler import PJM, JobDetail, JobStatus, SchedulerError, Slurm
+from hpc.ssh import SSHError
 
 
 class TestSlurmStatusCmd:
@@ -97,15 +100,18 @@ class TestSlurmParseStatus:
         output = "COMPLETED+\nCOMPLETED+\nCOMPLETED+\n"
         assert Slurm().parse_status(output) == JobStatus.COMPLETED
 
-    # Empty / unknown — empty output preserves the pre-existing FAILED
-    # behavior; unknown states fall back to FAILED so we stay
+    # Empty / unknown — empty input raises SchedulerError so callers can
+    # distinguish "no data yet" (accounting lag) from a real terminal
+    # FAILED. Unknown but parseable states still map to FAILED to stay
     # conservative with respect to wait termination.
 
-    def test_empty_output(self):
-        assert Slurm().parse_status("") == JobStatus.FAILED
+    def test_empty_output_raises_scheduler_error(self):
+        with pytest.raises(SchedulerError):
+            Slurm().parse_status("")
 
-    def test_whitespace_only_output(self):
-        assert Slurm().parse_status("   \n  \n") == JobStatus.FAILED
+    def test_whitespace_only_output_raises_scheduler_error(self):
+        with pytest.raises(SchedulerError):
+            Slurm().parse_status("   \n  \n")
 
     def test_unknown_status_falls_back_to_failed(self):
         assert Slurm().parse_status("BOGUS_STATE\n") == JobStatus.FAILED
@@ -235,18 +241,18 @@ class TestPJMParseStatus:
     def test_rjt_maps_to_failed(self):
         assert PJM().parse_status(self._row("RJT")) == JobStatus.FAILED
 
-    def test_empty_output_falls_back_to_failed(self):
-        # Regression guard for the deferred Issue #8: today, empty
-        # pjstat output is conflated with a true failure. The eventual
-        # fix should be a deliberate behavior change rather than an
-        # accidental one.
-        assert PJM().parse_status("") == JobStatus.FAILED
+    def test_empty_output_raises_scheduler_error(self):
+        # Empty pjstat output is a structural absence (accounting lag /
+        # aged-out job), not a real terminal failure; raise so callers
+        # treat it as transient.
+        with pytest.raises(SchedulerError):
+            PJM().parse_status("")
 
-    def test_header_only_output_falls_back_to_failed(self):
-        # Same deferred-#8 guard, header-only shape: ``pjstat`` exited
-        # cleanly but produced no data row (job aged out of the active
-        # view's post-EXT window).
-        assert PJM().parse_status(self._HEADER) == JobStatus.FAILED
+    def test_header_only_output_raises_scheduler_error(self):
+        # ``pjstat`` exited cleanly but produced no data row (job aged
+        # out of the active view's post-EXT window).
+        with pytest.raises(SchedulerError):
+            PJM().parse_status(self._HEADER)
 
     def test_multi_row_input_takes_first_parseable_row(self):
         # Documents today's single-row semantics so the eventual array
@@ -260,6 +266,22 @@ class TestPJMParseStatus:
         # partial line); the parser must skip them and continue.
         output = f"{self._HEADER}short\n48971221   EXT 0   0\n"
         assert PJM().parse_status(output) == JobStatus.COMPLETED
+
+    def test_unknown_st_falls_back_to_failed(self):
+        # An unrecognized but structurally-valid ST token (4 data
+        # tokens, non-``EXT``) stays on the conservative FAILED
+        # fallback rather than raising — only structural absence
+        # raises SchedulerError.
+        assert PJM().parse_status(self._row("ZZZ")) == JobStatus.FAILED
+
+
+class TestSchedulerErrorInheritance:
+    def test_scheduler_error_is_ssh_error_subclass(self):
+        # The three callers in JobManager (wait_for_job, tail_job_output,
+        # get_job_output) catch SSHError to apply transient/unknown
+        # handling. SchedulerError must inherit so those existing
+        # handlers cover it without modification.
+        assert issubclass(SchedulerError, SSHError)
 
 
 class TestPJMParseJobID:
