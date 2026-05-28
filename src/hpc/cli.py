@@ -75,6 +75,11 @@ def _apply_xdg_with_filter(src: Path, dst: Path, scheduler: SchedulerChoice) -> 
     Drops the inactive scheduler's section so the resulting ``hpc.toml`` is
     consistent with ``--scheduler``, and forces ``cluster.scheduler`` to the
     active value. The source file itself is not modified.
+
+    The destination inherits the source's permission bits so a restrictive
+    XDG mode (e.g. ``0o600`` for a file carrying ``env.exports`` secrets) is
+    not silently relaxed to the umask default — the previous ``shutil.copy``
+    path preserved mode bits, and the rewrite must too.
     """
     with open(src, "rb") as f:
         data = tomllib.load(f)
@@ -83,6 +88,7 @@ def _apply_xdg_with_filter(src: Path, dst: Path, scheduler: SchedulerChoice) -> 
     data.setdefault("cluster", {})["scheduler"] = scheduler.value
     with open(dst, "wb") as f:
         tomli_w.dump(data, f)
+    os.chmod(dst, os.stat(src).st_mode & 0o777)
 
 
 @app.command()

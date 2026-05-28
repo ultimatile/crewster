@@ -203,6 +203,35 @@ partition = "gpu"
     assert loaded.pjm.submit_options == []
 
 
+def test_init_xdg_preserves_source_mode(cli_runner, temp_dir, monkeypatch):
+    """Restrictive permissions on the XDG file carry over to ``hpc.toml``.
+
+    Guards against silently widening a ``0o600`` user config to ``0o644``
+    via the umask of the rewrite ``open(dst, "wb")``.
+    """
+    import os
+    import stat
+
+    monkeypatch.chdir(temp_dir)
+    user_cfg = _write_xdg(
+        temp_dir,
+        monkeypatch,
+        """
+[cluster]
+host = "myhpc"
+workdir = "/scratch/me"
+
+[slurm.options]
+partition = "gpu"
+""",
+    )
+    os.chmod(user_cfg, 0o600)
+    result = cli_runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    dst_mode = stat.S_IMODE((temp_dir / "hpc.toml").stat().st_mode)
+    assert dst_mode == 0o600
+
+
 def test_init_xdg_source_not_modified(cli_runner, temp_dir, monkeypatch):
     """Filter merge reads XDG; the source file must remain byte-identical."""
     monkeypatch.chdir(temp_dir)
