@@ -412,6 +412,54 @@ def test_status_normalizes_decorated_cancelled_state(cli_runner, temp_dir, monke
     assert "MaxRSS:   -" in result.stdout
 
 
+def test_wait_reports_unknown_state_and_exits_nonzero(
+    cli_runner, temp_dir, monkeypatch
+):
+    """Issue #24: when wait_for_job exhausts its retry budget it returns
+    JobStatus.UNKNOWN; the CLI prints an explicit unknown-state line,
+    persists the run as ``unknown``, and exits non-zero."""
+    from hpc.job import JobStatus
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    run = MagicMock()
+    run.run_id = "test_run"
+    run.job_id = "12345678"
+
+    with (
+        patch("hpc.cli.JobManager") as MockJobManager,
+        patch("hpc.cli.RunManager") as MockRunManager,
+    ):
+        MockRunManager.return_value.load_run_meta.return_value = run
+        MockJobManager.return_value.wait_for_job.return_value = JobStatus.UNKNOWN
+        result = cli_runner.invoke(app, ["wait", "test_run"])
+
+    assert result.exit_code == 1
+    assert "final state unknown" in result.stdout
+    assert run.status == "unknown"
+
+
+def test_submit_wait_reports_unknown_state_and_exits_nonzero(
+    cli_runner, temp_dir, monkeypatch
+):
+    """The submit ``--wait`` path shares the same UNKNOWN handling as the
+    standalone ``wait`` command."""
+    from hpc.job import JobStatus
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.submit_run.return_value = "12345678"
+        instance.wait_for_job.return_value = JobStatus.UNKNOWN
+        result = cli_runner.invoke(app, ["submit", "python train.py", "--wait"])
+
+    assert result.exit_code == 1
+    assert "final state unknown" in result.stdout
+
+
 def test_config_option(cli_runner, temp_dir, monkeypatch):
     """Test --config option loads specified config file"""
     monkeypatch.chdir(temp_dir)
