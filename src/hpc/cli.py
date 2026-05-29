@@ -339,7 +339,12 @@ def submit(
         status = job_manager.wait_for_job(job_id, adaptive=True)
         run.status = status.value.lower()
         run_manager.save_run_meta(run)
-        print(f"Job finished: {status.value}")
+        if status == JobStatus.UNKNOWN:
+            print(
+                f"Job {job_id}: final state unknown (scheduler stopped returning data)"
+            )
+        else:
+            print(f"Job finished: {status.value}")
         if status != JobStatus.COMPLETED:
             raise typer.Exit(1)
 
@@ -519,6 +524,11 @@ def wait(id: str, config: ConfigOption = None):
     status = job_manager.wait_for_job(run.job_id, adaptive=True)
     run.status = status.value.lower()
     run_manager.save_run_meta(run)
-    print(f"Job finished: {status.value}")
+    if status == JobStatus.UNKNOWN:
+        print(
+            f"Job {run.job_id}: final state unknown (scheduler stopped returning data)"
+        )
+    else:
+        print(f"Job finished: {status.value}")
     if status != JobStatus.COMPLETED:
         raise typer.Exit(1)

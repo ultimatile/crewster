@@ -274,6 +274,21 @@ class TestPJMParseStatus:
         # raises SchedulerError.
         assert PJM().parse_status(self._row("ZZZ")) == JobStatus.FAILED
 
+    def test_parse_status_with_matching_job_id(self):
+        # The fallback (history) path passes job_id so only a row whose
+        # jid column matches is trusted. A matching row parses normally.
+        assert (
+            PJM().parse_status(self._row("EXT", "0", "0"), job_id="48971221")
+            == JobStatus.COMPLETED
+        )
+
+    def test_parse_status_with_mismatching_job_id_raises(self):
+        # Fail-closed: a row whose jid column does not match the requested
+        # id is skipped, so a layout-drifted history view yields no usable
+        # row and raises rather than returning a status for another job.
+        with pytest.raises(SchedulerError):
+            PJM().parse_status(self._row("EXT", "0", "0"), job_id="00000000")
+
 
 class TestSchedulerErrorInheritance:
     def test_scheduler_error_is_ssh_error_subclass(self):

@@ -20,14 +20,18 @@ class SchedulerError(SSHError):
     callers retry / fall through instead of treating the absence of
     information as a terminal failure.
 
-    Inherits from ``SSHError`` so the three existing transient-catch
-    sites in ``JobManager`` cover it without modification:
-    ``wait_for_job``'s polling loop (continues), ``tail_job_output``'s
-    pre-tail status probe (falls through to ``tail -F``), and the inner
-    status probe inside ``get_job_output`` (swallows so the original
-    "No such file" diagnostic re-raises). CLI surfaces that want to
-    discriminate "no data yet" from a real SSH / command failure catch
-    ``SchedulerError`` specifically before the generic ``SSHError``.
+    Inherits from ``SSHError`` so the transient-catch sites in
+    ``JobManager`` cover it. ``get_job_status`` catches it to try the
+    scheduler's ``status_fallback_cmd`` (e.g. PJM's history view) before
+    surfacing the absence. ``wait_for_job`` catches it to apply a bounded
+    retry budget — persistent absence terminates as ``JobStatus.UNKNOWN``
+    rather than looping forever, while transient absence keeps polling.
+    ``tail_job_output``'s pre-tail status probe falls through to
+    ``tail -F``, and the inner status probe inside ``get_job_output``
+    swallows it so the original "No such file" diagnostic re-raises. CLI
+    surfaces that want to discriminate "no data yet" from a real SSH /
+    command failure catch ``SchedulerError`` specifically before the
+    generic ``SSHError``.
     """
 
 
@@ -38,6 +42,14 @@ class JobStatus(Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     TIMEOUT = "TIMEOUT"
+    # Synthesized only by ``JobManager.wait_for_job`` when the scheduler
+    # produces no usable status output for a bounded number of consecutive
+    # polls (a never-indexed / never-submitted job, or a PJM job that aged
+    # out of every view). It is never returned by ``parse_status`` /
+    # ``get_job_status``, which raise ``SchedulerError`` for that absence
+    # instead; UNKNOWN is the terminal interpretation the polling loop
+    # applies once the retry budget is exhausted.
+    UNKNOWN = "UNKNOWN"
 
 
 @dataclass
@@ -92,7 +104,26 @@ class Scheduler(ABC):
     def status_cmd(self, job_id: str) -> list[str]: ...
 
     @abstractmethod
-    def parse_status(self, output: str) -> JobStatus: ...
+    def parse_status(self, output: str, job_id: str | None = None) -> JobStatus:
+        """Map status-command output to a ``JobStatus``.
+
+        ``job_id`` is optional and, when given, lets a scheduler whose
+        output carries a job-id column reject rows that do not belong to
+        the requested job — a fail-closed guard for the fallback path
+        (see ``status_fallback_cmd``). Schedulers whose output has no
+        job-id column ignore it. Raise ``SchedulerError`` when no usable
+        data row is present."""
+        ...
+
+    def status_fallback_cmd(self, job_id: str) -> list[str] | None:
+        """Secondary status command, tried only when the primary
+        ``status_cmd`` output yields no data row (``SchedulerError``).
+
+        Returns ``None`` when the scheduler has no fallback source, which
+        leaves the primary ``SchedulerError`` to propagate unchanged. The
+        fallback output is parsed with the requested ``job_id`` so a
+        differing column layout cannot be misread as a real status."""
+        return None
 
     @abstractmethod
     def output_directives(self, run_dir: str) -> list[str]:
@@ -160,7 +191,10 @@ class Slurm(Scheduler):
             "-X",
         ]
 
-    def parse_status(self, output: str) -> JobStatus:
+    def parse_status(self, output: str, job_id: str | None = None) -> JobStatus:
+        # ``sacct --format=State`` output has no job-id column, so the
+        # ``job_id`` argument (accepted for the Scheduler contract) is
+        # unused here.
         # Aggregate over all rows so an array job is reported as terminal
         # only once every task is terminal. A single non-terminal task in
         # the set must keep the aggregate non-terminal to prevent
@@ -322,7 +356,17 @@ class PJM(Scheduler):
         # currently-active jobs.
         return ["pjstat", "-v", "--choose", "jid,st,ec,sn", job_id]
 
-    def parse_status(self, output: str) -> JobStatus:
+    def status_fallback_cmd(self, job_id: str) -> list[str] | None:
+        # When the active view (``status_cmd``) has no row — a job that
+        # aged out of it after ``EXT`` — the history view (``-H``) may
+        # still hold the record. Tried only on the ``SchedulerError``
+        # path, so the extra round-trip never burdens the normal query.
+        # Same ``--choose`` columns as the primary command, so the same
+        # ``parse_status`` applies; the caller passes ``job_id`` so a
+        # differing ``-H`` layout fails closed rather than misreporting.
+        return ["pjstat", "-H", "-v", "--choose", "jid,st,ec,sn", job_id]
+
+    def parse_status(self, output: str, job_id: str | None = None) -> JobStatus:
         # Expected output shape (header row + one data row per job):
         #     JOB_ID     ST  EC  SN
         #     48969021   EXT 0   0
@@ -331,9 +375,18 @@ class PJM(Scheduler):
         # here. An empty / header-only / short-row-only response raises
         # ``SchedulerError`` so callers can distinguish "no data yet"
         # from a real terminal failure.
+        #
+        # When ``job_id`` is given (the fallback path), a row is trusted
+        # only if its first column — the ``jid`` selected via ``--choose``
+        # — equals the requested id. This fails closed: a history view
+        # whose columns drift yields no matching row and raises
+        # ``SchedulerError`` instead of mapping an unrelated column to a
+        # bogus terminal status.
         for raw in output.splitlines():
             tokens = raw.split()
             if len(tokens) < 4 or tokens[0] == "JOB_ID":
+                continue
+            if job_id is not None and tokens[0] != job_id:
                 continue
             st, ec, sn = tokens[1], tokens[2], tokens[3]
             if st == "EXT":

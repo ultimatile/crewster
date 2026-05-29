@@ -27,6 +27,17 @@ def sample_config():
     )
 
 
+@pytest.fixture
+def pjm_config():
+    return HpcConfig(
+        cluster=ClusterConfig(
+            host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+        ),
+        env=EnvConfig(),
+        pjm=PjmConfig(options=[["-L", "node=1"]]),
+    )
+
+
 class TestJobStatus:
     def test_job_status_values(self):
         assert JobStatus.PENDING.value == "PENDING"
@@ -299,6 +310,60 @@ class TestJobManagerStatus:
         # transient-handling callers still catch it via `except SSHError`.
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
         mock_ssh_manager.run_command.return_value = MagicMock(stdout="")
+
+        with pytest.raises(SchedulerError):
+            manager.get_job_status("12345678")
+        # Slurm has no fallback command, so the absence surfaces after a
+        # single status call rather than triggering a second round-trip.
+        assert mock_ssh_manager.run_command.call_count == 1
+
+    def test_get_job_status_pjm_falls_back_to_history_on_empty_active_view(
+        self, mock_ssh_manager, pjm_config
+    ):
+        # Issue #24: a PJM job that aged out of the active pjstat view may
+        # still be recoverable from the history (-H) view. get_job_status
+        # tries the fallback only after the primary returns no data row.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=pjm_config)
+        mock_ssh_manager.run_command.side_effect = [
+            MagicMock(stdout=""),  # active view: aged out -> SchedulerError
+            MagicMock(stdout="JOB_ID     ST  EC  SN\n12345678   EXT 0   0\n"),
+        ]
+
+        status = manager.get_job_status("12345678")
+        assert status == JobStatus.COMPLETED
+        assert mock_ssh_manager.run_command.call_count == 2
+        fallback_call = mock_ssh_manager.run_command.call_args_list[1]
+        assert fallback_call.args[0] == "pjstat"
+        assert "-H" in fallback_call.args[1]
+
+    def test_get_job_status_pjm_raises_when_history_also_empty(
+        self, mock_ssh_manager, pjm_config
+    ):
+        # Never-indexed / never-submitted: neither view has a row, so the
+        # absence still surfaces as SchedulerError for wait_for_job's
+        # bounded-retry budget to terminate.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=pjm_config)
+        mock_ssh_manager.run_command.side_effect = [
+            MagicMock(stdout=""),
+            MagicMock(stdout=""),
+        ]
+
+        with pytest.raises(SchedulerError):
+            manager.get_job_status("12345678")
+        assert mock_ssh_manager.run_command.call_count == 2
+
+    def test_get_job_status_pjm_history_fallback_fails_closed_on_jid_mismatch(
+        self, mock_ssh_manager, pjm_config
+    ):
+        # Fail-closed guard: if the -H view's column layout drifts so the
+        # first column is not the requested jid, the fallback parse finds
+        # no matching row and raises SchedulerError rather than mapping an
+        # unrelated column to a bogus terminal status.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=pjm_config)
+        mock_ssh_manager.run_command.side_effect = [
+            MagicMock(stdout=""),
+            MagicMock(stdout="JOB_ID     ST  EC  SN\n99999999   EXT 0   0\n"),
+        ]
 
         with pytest.raises(SchedulerError):
             manager.get_job_status("12345678")

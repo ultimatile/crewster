@@ -8,7 +8,7 @@ from jinja2 import Template
 from .config import HpcConfig
 from .ssh import SSHManager
 from .run import RunConfig
-from .scheduler import JobDetail, JobStatus, get_scheduler
+from .scheduler import JobDetail, JobStatus, SchedulerError, get_scheduler
 
 
 def _resolve_home_path(ssh_manager, path: str) -> str:
@@ -237,10 +237,27 @@ class JobManager:
         return self.scheduler.parse_job_id(result.stdout)
 
     def get_job_status(self, job_id: str) -> JobStatus:
-        """Get job status"""
+        """Get job status.
+
+        On a ``SchedulerError`` from the primary status command (no data
+        row — a fresh job not yet indexed, or one aged out of the active
+        view), try the scheduler's optional fallback command once before
+        surfacing the absence. The fallback output is parsed with
+        ``job_id`` so a differing column layout fails closed (re-raises
+        ``SchedulerError``) instead of being misread as a real status.
+        Never returns ``JobStatus.UNKNOWN`` — that terminal interpretation
+        belongs to ``wait_for_job`` once its retry budget is exhausted.
+        """
         cmd = self.scheduler.status_cmd(job_id)
         result = self.ssh_manager.run_command(cmd[0], cmd[1:])
-        return self.scheduler.parse_status(result.stdout)
+        try:
+            return self.scheduler.parse_status(result.stdout)
+        except SchedulerError:
+            fallback = self.scheduler.status_fallback_cmd(job_id)
+            if fallback is None:
+                raise
+            result = self.ssh_manager.run_command(fallback[0], fallback[1:])
+            return self.scheduler.parse_status(result.stdout, job_id=job_id)
 
     def get_job_detail(self, job_id: str) -> JobDetail | None:
         """Get detailed accounting info, or None if the scheduler does not support it."""
@@ -310,6 +327,7 @@ class JobManager:
         adaptive: bool = False,
         max_interval: float = 300,
         growth_factor: float = 2.0,
+        max_missing_polls: int = 10,
     ) -> JobStatus:
         """Wait for job to complete, polling at interval
 
@@ -319,12 +337,22 @@ class JobManager:
             adaptive: If True, increase interval geometrically
             max_interval: Maximum polling interval (default 5 minutes)
             growth_factor: Multiplier for adaptive interval (default 2x)
+            max_missing_polls: Consecutive polls with no scheduler data
+                (``SchedulerError``) tolerated before giving up and
+                returning ``JobStatus.UNKNOWN``. Bounds the otherwise
+                unbounded retry on persistently-empty status output — a
+                never-submitted job, or a PJM job aged out of every view.
+                The counter resets on any successful status read, so it
+                does not trip on transient accounting lag. Generic
+                (non-``SchedulerError``) ``SSHError`` does not count and
+                is retried without bound, as before.
         """
         import time
 
         from .ssh import SSHError
 
         current_interval = interval
+        consecutive_missing = 0
         terminal_states = {
             JobStatus.COMPLETED,
             JobStatus.FAILED,
@@ -337,16 +365,24 @@ class JobManager:
 
             try:
                 status = self.get_job_status(job_id)
+            except SchedulerError:
+                # No data row even after any fallback. Bound the retry so
+                # a never-indexed / aged-out job cannot hang the caller
+                # forever; a real terminal state is unrecoverable here.
+                consecutive_missing += 1
+                if consecutive_missing >= max_missing_polls:
+                    return JobStatus.UNKNOWN
             except SSHError:
-                # Transient SSH failures (e.g. bastion rate limiting); retry
-                if adaptive:
-                    current_interval = min(
-                        current_interval * growth_factor, max_interval
-                    )
-                continue
-
-            if status in terminal_states:
-                return status
+                # Transient SSH failures (e.g. bastion rate limiting);
+                # retry without bound and without counting toward the
+                # missing-data budget.
+                pass
+            else:
+                # A successful read clears the missing-data streak so the
+                # budget only fires on *persistent* absence.
+                consecutive_missing = 0
+                if status in terminal_states:
+                    return status
 
             if adaptive:
                 current_interval = min(current_interval * growth_factor, max_interval)

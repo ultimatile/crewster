@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hpc.job import JobManager, JobStatus
-from hpc.ssh import SSHManager
+from hpc.ssh import SSHError, SSHManager
 from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig
 
 
@@ -85,3 +85,58 @@ class TestJobManagerWait:
             # Interval should increase
             intervals = [c[0][0] for c in mock_sleep.call_args_list]
             assert intervals[1] >= intervals[0]
+
+    def test_wait_gives_up_after_max_missing_polls(
+        self, mock_ssh_manager, sample_config
+    ):
+        # Issue #24: persistently-empty status output (never-submitted job,
+        # or a PJM job aged out of every view) must terminate the wait
+        # instead of looping forever. The bounded retry surfaces it as
+        # JobStatus.UNKNOWN once the budget is exhausted.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.return_value = MagicMock(stdout="")
+
+        status = manager.wait_for_job("12345678", interval=0.01, max_missing_polls=3)
+        assert status == JobStatus.UNKNOWN
+        assert mock_ssh_manager.run_command.call_count == 3
+
+    def test_wait_missing_budget_resets_on_successful_read(
+        self, mock_ssh_manager, sample_config
+    ):
+        # The budget counts only *consecutive* empty polls: a successful
+        # read in between clears the streak, so transient accounting lag
+        # interleaved with real status never trips the limit.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.side_effect = [
+            MagicMock(stdout=""),  # missing 1
+            MagicMock(stdout=""),  # missing 2 (budget is 3, not yet hit)
+            MagicMock(stdout="RUNNING\n"),  # success -> reset to 0
+            MagicMock(stdout=""),  # missing 1
+            MagicMock(stdout=""),  # missing 2
+            MagicMock(stdout="COMPLETED\n"),  # terminal
+        ]
+
+        status = manager.wait_for_job("12345678", interval=0.01, max_missing_polls=3)
+        assert status == JobStatus.COMPLETED
+        assert mock_ssh_manager.run_command.call_count == 6
+
+    def test_wait_generic_ssh_error_does_not_count_toward_budget(
+        self, mock_ssh_manager, sample_config
+    ):
+        # Only SchedulerError (no data row) is budgeted. A generic SSHError
+        # is a transport hiccup (e.g. bastion rate limiting) and is retried
+        # without bound, so repeated transport errors beyond the budget
+        # must not synthesize UNKNOWN.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.side_effect = [
+            SSHError("connection reset"),
+            SSHError("connection reset"),
+            SSHError("connection reset"),
+            SSHError("connection reset"),
+            SSHError("connection reset"),
+            MagicMock(stdout="COMPLETED\n"),
+        ]
+
+        status = manager.wait_for_job("12345678", interval=0.01, max_missing_polls=3)
+        assert status == JobStatus.COMPLETED
+        assert mock_ssh_manager.run_command.call_count == 6
