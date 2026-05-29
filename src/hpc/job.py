@@ -245,19 +245,37 @@ class JobManager:
         surfacing the absence. The fallback output is parsed with
         ``job_id`` so a differing column layout fails closed (re-raises
         ``SchedulerError``) instead of being misread as a real status.
+
+        The fallback is best-effort: if it recovers nothing — whether
+        because its command exits non-zero (an unknown/expired job id
+        raising ``SSHError``) or its output has no matching row (raising
+        ``SchedulerError``) — the original ``SchedulerError`` is surfaced
+        rather than a generic ``SSHError``. That keeps the absence within
+        ``wait_for_job``'s bounded retry budget instead of letting a
+        failed fallback escape it as an unbounded transport retry.
+
         Never returns ``JobStatus.UNKNOWN`` — that terminal interpretation
         belongs to ``wait_for_job`` once its retry budget is exhausted.
         """
+        from .ssh import SSHError
+
         cmd = self.scheduler.status_cmd(job_id)
         result = self.ssh_manager.run_command(cmd[0], cmd[1:])
         try:
             return self.scheduler.parse_status(result.stdout)
-        except SchedulerError:
+        except SchedulerError as primary_absence:
             fallback = self.scheduler.status_fallback_cmd(job_id)
             if fallback is None:
                 raise
-            result = self.ssh_manager.run_command(fallback[0], fallback[1:])
-            return self.scheduler.parse_status(result.stdout, job_id=job_id)
+            try:
+                result = self.ssh_manager.run_command(fallback[0], fallback[1:])
+                return self.scheduler.parse_status(result.stdout, job_id=job_id)
+            except SSHError:
+                # SSHError covers both the fallback command's non-zero exit
+                # and parse_status's SchedulerError (a subclass). Either way
+                # no status was recovered, so re-surface the original
+                # absence to keep wait_for_job's budget in effect.
+                raise primary_absence from None
 
     def get_job_detail(self, job_id: str) -> JobDetail | None:
         """Get detailed accounting info, or None if the scheduler does not support it."""

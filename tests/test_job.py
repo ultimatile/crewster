@@ -368,6 +368,24 @@ class TestJobManagerStatus:
         with pytest.raises(SchedulerError):
             manager.get_job_status("12345678")
 
+    def test_get_job_status_pjm_fallback_command_failure_surfaces_scheduler_error(
+        self, mock_ssh_manager, pjm_config
+    ):
+        # If the fallback command itself exits non-zero (an unknown/expired
+        # job id), run_command raises a generic SSHError. get_job_status
+        # must re-surface the original SchedulerError so wait_for_job's
+        # bounded budget still applies; a leaked generic SSHError would be
+        # retried without bound and hang the caller.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=pjm_config)
+        mock_ssh_manager.run_command.side_effect = [
+            MagicMock(stdout=""),  # active view: no row -> SchedulerError
+            SSHError("pjstat -H exited non-zero"),  # history view: command error
+        ]
+
+        with pytest.raises(SchedulerError):
+            manager.get_job_status("12345678")
+        assert mock_ssh_manager.run_command.call_count == 2
+
 
 class TestJobManagerDetail:
     def test_get_job_detail_slurm_invokes_sacct_and_returns_detail(
