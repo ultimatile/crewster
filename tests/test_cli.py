@@ -1,5 +1,6 @@
 """CLI command tests"""
 
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from hpc.main import app
@@ -25,6 +26,231 @@ def test_init_creates_config_file(cli_runner, temp_dir, monkeypatch):
     assert config_path.exists()
     content = config_path.read_text()
     assert "[cluster]" in content
+
+
+def test_init_scheduler_default_slurm(cli_runner, temp_dir, monkeypatch):
+    """No ``--scheduler`` keeps the Slurm shape (regression guard for default)."""
+    monkeypatch.chdir(temp_dir)
+    result = cli_runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    content = (temp_dir / "hpc.toml").read_text()
+    assert "[slurm.options]" in content
+    assert "[pjm" not in content
+    assert 'scheduler = "slurm"' in content
+
+
+def test_init_scheduler_pjm_template(cli_runner, temp_dir, monkeypatch):
+    """``--scheduler pjm`` emits a PJM-shaped template."""
+    monkeypatch.chdir(temp_dir)
+    result = cli_runner.invoke(app, ["init", "--scheduler", "pjm"])
+    assert result.exit_code == 0
+    content = (temp_dir / "hpc.toml").read_text()
+    assert "[pjm]" in content
+    assert 'scheduler = "pjm"' in content
+    assert "[slurm" not in content
+
+
+def test_init_scheduler_rejects_unknown_value(cli_runner, temp_dir, monkeypatch):
+    """typer constrains ``--scheduler`` to known enum values."""
+    monkeypatch.chdir(temp_dir)
+    result = cli_runner.invoke(app, ["init", "--scheduler", "lsf"])
+    assert result.exit_code != 0
+
+
+def _write_xdg(temp_dir, monkeypatch, body: str) -> Path:
+    """Place ``body`` at ``$XDG_CONFIG_HOME/hpc/config.toml`` and return it."""
+    xdg = temp_dir / "xdg"
+    (xdg / "hpc").mkdir(parents=True)
+    user_cfg = xdg / "hpc" / "config.toml"
+    user_cfg.write_text(body)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    return user_cfg
+
+
+def test_init_xdg_filter_slurm(cli_runner, temp_dir, monkeypatch):
+    """XDG carrying both scheduler sections drops [pjm] under --scheduler slurm."""
+    monkeypatch.chdir(temp_dir)
+    _write_xdg(
+        temp_dir,
+        monkeypatch,
+        """
+[cluster]
+host = "myhpc"
+workdir = "/scratch/me"
+
+[slurm.options]
+partition = "gpu"
+
+[pjm]
+options = [["-L", "node=1"]]
+""",
+    )
+    result = cli_runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    content = (temp_dir / "hpc.toml").read_text()
+    assert "[slurm.options]" in content
+    assert "[pjm" not in content
+    assert 'scheduler = "slurm"' in content
+
+
+def test_init_xdg_filter_pjm(cli_runner, temp_dir, monkeypatch):
+    """Same XDG drops [slurm.*] under --scheduler pjm."""
+    monkeypatch.chdir(temp_dir)
+    _write_xdg(
+        temp_dir,
+        monkeypatch,
+        """
+[cluster]
+host = "myhpc"
+workdir = "/scratch/me"
+
+[slurm.options]
+partition = "gpu"
+
+[pjm]
+options = [["-L", "node=1"]]
+""",
+    )
+    result = cli_runner.invoke(app, ["init", "--scheduler", "pjm"])
+    assert result.exit_code == 0
+    content = (temp_dir / "hpc.toml").read_text()
+    assert "[pjm]" in content
+    assert "[slurm" not in content
+    assert 'scheduler = "pjm"' in content
+
+
+def test_init_xdg_overrides_cluster_scheduler(cli_runner, temp_dir, monkeypatch):
+    """XDG's cluster.scheduler is rewritten to match --scheduler."""
+    monkeypatch.chdir(temp_dir)
+    _write_xdg(
+        temp_dir,
+        monkeypatch,
+        """
+[cluster]
+host = "myhpc"
+workdir = "/scratch/me"
+scheduler = "slurm"
+
+[pjm]
+options = [["-L", "node=1"]]
+""",
+    )
+    result = cli_runner.invoke(app, ["init", "--scheduler", "pjm"])
+    assert result.exit_code == 0
+    content = (temp_dir / "hpc.toml").read_text()
+    assert 'scheduler = "pjm"' in content
+    assert 'scheduler = "slurm"' not in content
+
+
+def test_init_xdg_preserves_unknown_sections(cli_runner, temp_dir, monkeypatch):
+    """Sections other than the inactive scheduler pass through unchanged.
+
+    The filter only removes the inactive scheduler's top-level table; anything
+    else in XDG (including sections not recognized by ``ConfigManager``) is
+    preserved verbatim.
+    """
+    monkeypatch.chdir(temp_dir)
+    _write_xdg(
+        temp_dir,
+        monkeypatch,
+        """
+[cluster]
+host = "myhpc"
+workdir = "/scratch/me"
+
+[slurm.options]
+partition = "gpu"
+
+[custom]
+note = "preserve me"
+""",
+    )
+    result = cli_runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    content = (temp_dir / "hpc.toml").read_text()
+    assert "[custom]" in content
+    assert 'note = "preserve me"' in content
+
+
+def test_init_xdg_only_one_section(cli_runner, temp_dir, monkeypatch):
+    """XDG holding only [slurm.*] plus --scheduler pjm degenerates to a valid
+    scheduler-less file; load path falls back to PJM defaults without error."""
+    monkeypatch.chdir(temp_dir)
+    _write_xdg(
+        temp_dir,
+        monkeypatch,
+        """
+[cluster]
+host = "myhpc"
+workdir = "/scratch/me"
+
+[slurm.options]
+partition = "gpu"
+""",
+    )
+    result = cli_runner.invoke(app, ["init", "--scheduler", "pjm"])
+    assert result.exit_code == 0
+    content = (temp_dir / "hpc.toml").read_text()
+    assert "[slurm" not in content
+    assert "[pjm" not in content
+    assert 'scheduler = "pjm"' in content
+
+    from hpc.config import ConfigManager
+
+    loaded = ConfigManager().load_config(temp_dir / "hpc.toml")
+    assert loaded.cluster.scheduler == "pjm"
+    assert loaded.pjm.options == []
+    assert loaded.pjm.submit_options == []
+
+
+def test_init_xdg_preserves_source_mode(cli_runner, temp_dir, monkeypatch):
+    """Restrictive permissions on the XDG file carry over to ``hpc.toml``.
+
+    Guards against silently widening a ``0o600`` user config to ``0o644``
+    via the umask of the rewrite ``open(dst, "wb")``.
+    """
+    import os
+    import stat
+
+    monkeypatch.chdir(temp_dir)
+    user_cfg = _write_xdg(
+        temp_dir,
+        monkeypatch,
+        """
+[cluster]
+host = "myhpc"
+workdir = "/scratch/me"
+
+[slurm.options]
+partition = "gpu"
+""",
+    )
+    os.chmod(user_cfg, 0o600)
+    result = cli_runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    dst_mode = stat.S_IMODE((temp_dir / "hpc.toml").stat().st_mode)
+    assert dst_mode == 0o600
+
+
+def test_init_xdg_source_not_modified(cli_runner, temp_dir, monkeypatch):
+    """Filter merge reads XDG; the source file must remain byte-identical."""
+    monkeypatch.chdir(temp_dir)
+    body = """
+[cluster]
+host = "myhpc"
+workdir = "/scratch/me"
+
+[slurm.options]
+partition = "gpu"
+
+[pjm]
+options = [["-L", "node=1"]]
+"""
+    user_cfg = _write_xdg(temp_dir, monkeypatch, body)
+    before = user_cfg.read_text()
+    result = cli_runner.invoke(app, ["init", "--scheduler", "pjm"])
+    assert result.exit_code == 0
+    assert user_cfg.read_text() == before
 
 
 def test_sync_command_exists(cli_runner):

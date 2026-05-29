@@ -1,10 +1,12 @@
 """CLI command definitions"""
 
 import os
-import shutil
+import tomllib
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import tomli_w
 import typer
 from typing_extensions import Annotated
 
@@ -15,6 +17,18 @@ from .sync import SyncManager
 from .job import JobManager, JobStatus
 from .run import RunManager
 from .scheduler import SchedulerError
+
+
+class SchedulerChoice(str, Enum):
+    """CLI choices for ``hpc init --scheduler``.
+
+    ``str`` mix-in lets typer expose the enum as constrained string choices
+    and lets ``.value`` be passed straight into the TOML payload.
+    """
+
+    slurm = "slurm"
+    pjm = "pjm"
+
 
 # Type alias for config option
 ConfigOption = Annotated[
@@ -55,8 +69,52 @@ def _get_user_config_path() -> Path:
     return Path(xdg_config) / "hpc" / "config.toml"
 
 
+def _apply_xdg_with_filter(src: Path, dst: Path, scheduler: SchedulerChoice) -> None:
+    """Project XDG user-config onto the active scheduler and write to ``dst``.
+
+    Drops the inactive scheduler's section so the resulting ``hpc.toml`` is
+    consistent with ``--scheduler``, and forces ``cluster.scheduler`` to the
+    active value. The source file itself is not modified.
+
+    The destination inherits the source's permission bits so a restrictive
+    XDG mode (e.g. ``0o600`` for a file carrying ``env.exports`` secrets) is
+    not silently relaxed to the umask default — the previous ``shutil.copy``
+    path preserved mode bits, and the rewrite must too.
+    """
+    with open(src, "rb") as f:
+        data = tomllib.load(f)
+    inactive = "pjm" if scheduler is SchedulerChoice.slurm else "slurm"
+    data.pop(inactive, None)
+    data.setdefault("cluster", {})["scheduler"] = scheduler.value
+    src_mode = os.stat(src).st_mode & 0o777
+    # ``os.open`` with the source mode avoids the exposure window where
+    # ``open(dst, "wb")`` would briefly create ``dst`` with the umask-masked
+    # default (often ``0o644``) before a subsequent ``chmod`` tightens it.
+    # ``umask`` may still mask bits off the create, so chmod after to land
+    # exactly on ``src_mode``; that direction only widens, never relaxes
+    # past the source.
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, src_mode)
+    with os.fdopen(fd, "wb") as f:
+        tomli_w.dump(data, f)
+    os.chmod(dst, src_mode)
+
+
 @app.command()
-def init(config: ConfigOption = None):
+def init(
+    scheduler: Annotated[
+        SchedulerChoice,
+        typer.Option(
+            "--scheduler",
+            help=(
+                "Target scheduler for the generated template. "
+                "When a user-level XDG config exists, its inactive scheduler "
+                "section is filtered out and cluster.scheduler is forced to "
+                "this value."
+            ),
+        ),
+    ] = SchedulerChoice.slurm,
+    config: ConfigOption = None,
+):
     """Initialize HPC project configuration"""
     config_path = _resolve_config_path(config, walk_up=False)
     if config_path.exists():
@@ -65,12 +123,12 @@ def init(config: ConfigOption = None):
 
     user_config = _get_user_config_path()
     if user_config.exists():
-        shutil.copy(user_config, config_path)
-        print(f"Copied from {user_config}: {config_path}")
+        _apply_xdg_with_filter(user_config, config_path, scheduler)
+        print(f"Applied {user_config} ({scheduler.value}): {config_path}")
     else:
         manager = ConfigManager()
-        manager.generate_template(config_path)
-        print(f"Created config file: {config_path}")
+        manager.generate_template(config_path, scheduler=scheduler.value)
+        print(f"Created config file ({scheduler.value}): {config_path}")
 
 
 @app.command()
