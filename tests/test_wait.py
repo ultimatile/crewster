@@ -6,7 +6,13 @@ import pytest
 
 from hpc.job import JobManager, JobStatus
 from hpc.ssh import SSHError, SSHManager
-from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig
+from hpc.config import (
+    HpcConfig,
+    ClusterConfig,
+    EnvConfig,
+    PjmConfig,
+    SlurmConfig,
+)
 
 
 @pytest.fixture
@@ -20,6 +26,17 @@ def sample_config():
         cluster=ClusterConfig(host="myhpc", workdir="/scratch/user/proj"),
         env=EnvConfig(),
         slurm=SlurmConfig(partition="gpu", time="02:00:00", mem="32G"),
+    )
+
+
+@pytest.fixture
+def pjm_config():
+    return HpcConfig(
+        cluster=ClusterConfig(
+            host="myhpc", workdir="/scratch/user/proj", scheduler="pjm"
+        ),
+        env=EnvConfig(),
+        pjm=PjmConfig(options=[["-L", "node=1"]]),
     )
 
 
@@ -139,4 +156,28 @@ class TestJobManagerWait:
 
         status = manager.wait_for_job("12345678", interval=0.01, max_missing_polls=3)
         assert status == JobStatus.COMPLETED
+        assert mock_ssh_manager.run_command.call_count == 6
+
+    def test_wait_terminates_when_pjm_fallback_command_keeps_failing(
+        self, mock_ssh_manager, pjm_config
+    ):
+        # End-to-end termination contract: when the PJM active view is
+        # persistently empty and the history fallback command itself keeps
+        # exiting non-zero (an unknown/expired job), the wait must still
+        # terminate as UNKNOWN. The fallback's generic SSHError is folded
+        # back into SchedulerError by get_job_status so it stays inside the
+        # budget instead of being retried without bound. Each poll issues
+        # two run_command calls (active view + history fallback).
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=pjm_config)
+        mock_ssh_manager.run_command.side_effect = [
+            MagicMock(stdout=""),  # poll 1: active view empty
+            SSHError("pjstat -H exited non-zero"),  # poll 1: fallback errors
+            MagicMock(stdout=""),  # poll 2
+            SSHError("pjstat -H exited non-zero"),
+            MagicMock(stdout=""),  # poll 3
+            SSHError("pjstat -H exited non-zero"),
+        ]
+
+        status = manager.wait_for_job("12345678", interval=0.01, max_missing_polls=3)
+        assert status == JobStatus.UNKNOWN
         assert mock_ssh_manager.run_command.call_count == 6
