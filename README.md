@@ -270,9 +270,9 @@ options = [
 
 - The inactive scheduler's top-level section (`[pjm]` under `--scheduler slurm`, `[slurm]` under `--scheduler pjm`) is dropped.
 - `cluster.scheduler` is forced to match the `--scheduler` argument.
-- All other sections (including unknown ones) are preserved verbatim.
+- All other sections (including unknown ones) carry over with their parsed TOML values intact.
 
-The source XDG file is not modified. This lets the XDG file carry both `[slurm]` and `[pjm]` sections side by side so that `hpc init --scheduler {slurm,pjm}` projects out the active half.
+The source XDG file is not modified. This lets the XDG file carry both `[slurm]` and `[pjm]` sections side by side so that `hpc init --scheduler {slurm,pjm}` projects out the active half. Because the file goes through `tomllib.load` and `tomli_w.dump`, comments and original formatting (e.g. inline-array layout) are not preserved in the generated `hpc.toml`; only the parsed data is.
 
 ## Requirements
 
