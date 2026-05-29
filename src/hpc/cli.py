@@ -86,9 +86,17 @@ def _apply_xdg_with_filter(src: Path, dst: Path, scheduler: SchedulerChoice) -> 
     inactive = "pjm" if scheduler is SchedulerChoice.slurm else "slurm"
     data.pop(inactive, None)
     data.setdefault("cluster", {})["scheduler"] = scheduler.value
-    with open(dst, "wb") as f:
+    src_mode = os.stat(src).st_mode & 0o777
+    # ``os.open`` with the source mode avoids the exposure window where
+    # ``open(dst, "wb")`` would briefly create ``dst`` with the umask-masked
+    # default (often ``0o644``) before a subsequent ``chmod`` tightens it.
+    # ``umask`` may still mask bits off the create, so chmod after to land
+    # exactly on ``src_mode``; that direction only widens, never relaxes
+    # past the source.
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, src_mode)
+    with os.fdopen(fd, "wb") as f:
         tomli_w.dump(data, f)
-    os.chmod(dst, os.stat(src).st_mode & 0o777)
+    os.chmod(dst, src_mode)
 
 
 @app.command()
