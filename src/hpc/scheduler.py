@@ -272,6 +272,14 @@ class Slurm(Scheduler):
             job_id = parent[0]
             if "." in job_id:
                 continue  # sub-step row; attributed to its parent below
+            if "[" in job_id:
+                # A bracket-range JobID (e.g. `12345_[2-99]`) is sacct's
+                # compressed summary of un-launched array elements, not one
+                # real task — counting it as a single task would misreport
+                # the breakdown. Such elements have not run and carry no
+                # accounting, so they are skipped; a fully-pending array thus
+                # yields [] and falls back to the single-line status display.
+                continue
             state = parent[1]
             if not state:
                 continue  # parent not yet recorded (no usable state)
