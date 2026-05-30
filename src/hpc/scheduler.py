@@ -275,6 +275,15 @@ class Slurm(Scheduler):
         if any("[" in r[0] for r in rows):
             return []
 
+        # Index sub-step rows by their parent JobID (everything before the
+        # first '.') so each parent's MaxRSS group is an O(1) lookup rather
+        # than an O(n) scan — keeps parse_detail linear for large arrays.
+        substeps: dict[str, list[list[str]]] = {}
+        for r in rows:
+            head, sep, _ = r[0].partition(".")
+            if sep:  # a '.' was present -> this is a sub-step row
+                substeps.setdefault(head, []).append(r)
+
         # One JobDetail per parent row, in sacct order. Array tasks
         # (`12345_0`, `12345_1`) and het components (`12345+0`, `12345+1`)
         # each appear as their own parent row, so every task/component is
@@ -292,7 +301,7 @@ class Slurm(Scheduler):
             # work reports it on numbered steps (`.0`, ...). Aggregate the max
             # over this task's own rows only — the parent plus its sub-steps
             # (`<job_id>.<step>`) — so per-task RSS never bleeds across tasks.
-            group = [parent] + [r for r in rows if r[0].startswith(job_id + ".")]
+            group = [parent] + substeps.get(job_id, [])
             non_empty = [r[4] for r in group if r[4]]
             max_rss = max(non_empty, key=_max_rss_to_bytes, default="")
             details.append(
