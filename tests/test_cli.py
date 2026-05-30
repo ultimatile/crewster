@@ -433,9 +433,30 @@ def test_status_array_job_aggregate_line_by_default(cli_runner, temp_dir, monkey
     with patch("hpc.cli.JobManager") as MockJobManager:
         instance = MockJobManager.return_value
         instance.get_job_detail.return_value = [
-            JobDetail("12345_0", "COMPLETED", "0:0", "00:01:00", "1024K", "16Gn"),
-            JobDetail("12345_1", "COMPLETED", "0:0", "00:01:00", "1024K", "16Gn"),
-            JobDetail("12345_2", "OUT_OF_MEMORY", "0:125", "00:00:30", "2048K", "16Gn"),
+            JobDetail(
+                job_id="12345_0",
+                state="COMPLETED",
+                exit_code="0:0",
+                elapsed="00:01:00",
+                max_rss="1024K",
+                req_mem="16Gn",
+            ),
+            JobDetail(
+                job_id="12345_1",
+                state="COMPLETED",
+                exit_code="0:0",
+                elapsed="00:01:00",
+                max_rss="1024K",
+                req_mem="16Gn",
+            ),
+            JobDetail(
+                job_id="12345_2",
+                state="OUT_OF_MEMORY",
+                exit_code="0:125",
+                elapsed="00:00:30",
+                max_rss="2048K",
+                req_mem="16Gn",
+            ),
         ]
         result = cli_runner.invoke(app, ["status", "12345"])
 
@@ -459,8 +480,22 @@ def test_status_array_job_per_task_blocks_with_detail_tasks(
     with patch("hpc.cli.JobManager") as MockJobManager:
         instance = MockJobManager.return_value
         instance.get_job_detail.return_value = [
-            JobDetail("12345_0", "COMPLETED", "0:0", "00:01:00", "1024K", "16Gn"),
-            JobDetail("12345_1", "OUT_OF_MEMORY", "0:125", "00:00:30", "2048K", "16Gn"),
+            JobDetail(
+                job_id="12345_0",
+                state="COMPLETED",
+                exit_code="0:0",
+                elapsed="00:01:00",
+                max_rss="1024K",
+                req_mem="16Gn",
+            ),
+            JobDetail(
+                job_id="12345_1",
+                state="OUT_OF_MEMORY",
+                exit_code="0:125",
+                elapsed="00:00:30",
+                max_rss="2048K",
+                req_mem="16Gn",
+            ),
         ]
         result = cli_runner.invoke(app, ["status", "12345", "--detail", "tasks"])
 
@@ -486,9 +521,30 @@ def test_status_array_aggregate_groups_normalized_states(
     with patch("hpc.cli.JobManager") as MockJobManager:
         instance = MockJobManager.return_value
         instance.get_job_detail.return_value = [
-            JobDetail("12345_0", "CANCELLED+", "0:15", "00:00:03", "", "8Gn"),
-            JobDetail("12345_1", "CANCELLED by 4011", "0:15", "00:00:03", "", "8Gn"),
-            JobDetail("12345_2", "COMPLETED", "0:0", "00:01:00", "1024K", "8Gn"),
+            JobDetail(
+                job_id="12345_0",
+                state="CANCELLED+",
+                exit_code="0:15",
+                elapsed="00:00:03",
+                max_rss="",
+                req_mem="8Gn",
+            ),
+            JobDetail(
+                job_id="12345_1",
+                state="CANCELLED by 4011",
+                exit_code="0:15",
+                elapsed="00:00:03",
+                max_rss="",
+                req_mem="8Gn",
+            ),
+            JobDetail(
+                job_id="12345_2",
+                state="COMPLETED",
+                exit_code="0:0",
+                elapsed="00:01:00",
+                max_rss="1024K",
+                req_mem="8Gn",
+            ),
         ]
         result = cli_runner.invoke(app, ["status", "12345"])
 
