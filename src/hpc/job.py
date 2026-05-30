@@ -277,8 +277,16 @@ class JobManager:
                 # absence to keep wait_for_job's budget in effect.
                 raise primary_absence from None
 
-    def get_job_detail(self, job_id: str) -> JobDetail | None:
-        """Get detailed accounting info, or None if the scheduler does not support it."""
+    def get_job_detail(self, job_id: str) -> list[JobDetail] | None:
+        """Get detailed accounting info as one ``JobDetail`` per job / task /
+        component.
+
+        Returns ``None`` when the scheduler exposes no detail source
+        (``detail_cmd`` is ``None`` — e.g. PJM), distinct from ``[]`` which
+        means the scheduler is supported but has no usable row yet (sacct
+        accounting lag). A multi-element list represents an array job's tasks
+        or a heterogeneous job's components.
+        """
         cmd = self.scheduler.detail_cmd(job_id)
         if cmd is None:
             return None

@@ -399,14 +399,17 @@ class TestJobManagerDetail:
             )
         )
 
-        detail = manager.get_job_detail("12345")
-        assert detail == JobDetail(
-            state="COMPLETED",
-            exit_code="0:0",
-            elapsed="00:01:23",
-            max_rss="1024K",
-            req_mem="16Gn",
-        )
+        details = manager.get_job_detail("12345")
+        assert details == [
+            JobDetail(
+                job_id="12345",
+                state="COMPLETED",
+                exit_code="0:0",
+                elapsed="00:01:23",
+                max_rss="1024K",
+                req_mem="16Gn",
+            )
+        ]
         call_args = mock_ssh_manager.run_command.call_args
         assert call_args.args[0] == "sacct"
         assert "-P" in call_args.args[1]

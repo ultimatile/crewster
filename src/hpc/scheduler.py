@@ -54,13 +54,19 @@ class JobStatus(Enum):
 
 @dataclass
 class JobDetail:
-    """Raw scheduler-side job accounting fields.
+    """Raw scheduler-side job accounting fields for one job / task / component.
 
     Strings are stored verbatim from the scheduler so the user sees
     the exact value (e.g. ``OUT_OF_MEMORY``, ``CANCELLED+``) without
     any enum/unit normalization.
+
+    ``job_id`` is the canonical scheduler JobID of this specific row
+    (e.g. ``12345`` for a plain job, ``12345_0`` for an array task,
+    ``12345+0`` for a heterogeneous-job component) so a multi-task
+    result can be labeled and grouped per task.
     """
 
+    job_id: str
     state: str
     exit_code: str
     elapsed: str
@@ -148,9 +154,12 @@ class Scheduler(ABC):
         """Command that fetches detailed accounting info, or None if unsupported."""
         return None
 
-    def parse_detail(self, output: str) -> JobDetail | None:
-        """Parse detail-command output, or None if unsupported / unparseable."""
-        return None
+    def parse_detail(self, output: str) -> list[JobDetail]:
+        """Parse detail-command output into one ``JobDetail`` per job / task /
+        component, in scheduler order. Returns ``[]`` when the scheduler has
+        no detail support or the output has no usable row. Concrete base
+        (not abstract) so schedulers without a detail source inherit ``[]``."""
+        return []
 
 
 class Slurm(Scheduler):
@@ -227,20 +236,29 @@ class Slurm(Scheduler):
         return JobStatus.COMPLETED
 
     def detail_cmd(self, job_id: str) -> list[str] | None:
+        # `-P` changes only the field separator; it does NOT disable sacct's
+        # per-field column widths, so State and JobID are still truncated to
+        # their (~10-char) defaults — `OUT_OF_MEMORY` -> `OUT_OF_ME+`, and a
+        # long array-task `JobID` -> `12345_1000.b+`. A truncated State breaks
+        # state grouping / terminal-field gating; a truncated JobID breaks the
+        # `.`-based parent/sub-step partition. Widen both (as status_cmd does
+        # for State); parsable output is not padded, so widening only raises
+        # the truncation ceiling.
         return [
             "sacct",
             "-j",
             job_id,
-            "--format=JobID,State,ExitCode,Elapsed,MaxRSS,ReqMem",
+            "--format=JobID%30,State%30,ExitCode,Elapsed,MaxRSS,ReqMem",
             "--noheader",
             "-P",
         ]
 
-    def parse_detail(self, output: str) -> JobDetail | None:
-        # sacct -P emits one row per accounting record (the parent step plus
-        # any sub-steps such as `.batch` / `.extern`). Columns appear in the
-        # order requested via --format. -P (parsable2) does not add a trailing
-        # '|', but we tolerate it so callers can pass -p output as well.
+    def parse_detail(self, output: str) -> list[JobDetail]:
+        # sacct -P emits one row per accounting record: a parent row per job /
+        # array task / het component (JobID without a '.') plus that row's
+        # sub-steps (`.batch`, `.extern`, `.0`, ... — always containing a '.').
+        # Columns appear in the --format order. -P (parsable2) omits the
+        # trailing '|', but we tolerate it so -p output also parses.
         rows: list[list[str]] = []
         for raw in output.splitlines():
             line = raw.strip()
@@ -253,35 +271,58 @@ class Slurm(Scheduler):
                 continue
             rows.append(fields[:6])
 
-        if not rows:
-            return None
+        # A bracket-range JobID (e.g. `12345_[2-99]`) is sacct's compressed
+        # summary of un-launched array elements. Its presence means the array
+        # is only partially launched, so a per-task accounting view would be
+        # incomplete: the range can neither be counted as one task (it stands
+        # for many) nor silently dropped (that would hide pending tasks and
+        # misreport, e.g., a half-pending array as COMPLETED). Defer the whole
+        # job to the caller's aggregate-status fallback by returning no detail
+        # rows; complete per-task detail returns once every element has
+        # launched (no range row remains).
+        if any("[" in r[0] for r in rows):
+            return []
 
-        # Parent step rows have a JobID without a '.' separator; sub-steps
-        # (`.batch`, `.extern`, `.0`, ...) always contain a dot.
-        parent = next((r for r in rows if "." not in r[0]), None)
-        if parent is None:
-            return None
+        # Index sub-step rows by their parent JobID (everything before the
+        # first '.') so each parent's MaxRSS group is an O(1) lookup rather
+        # than an O(n) scan — keeps parse_detail linear for large arrays.
+        substeps: dict[str, list[list[str]]] = {}
+        for r in rows:
+            head, sep, _ = r[0].partition(".")
+            if sep:  # a '.' was present -> this is a sub-step row
+                substeps.setdefault(head, []).append(r)
 
-        # MaxRSS is per-step; the parent row typically reports an empty
-        # MaxRSS. For plain-cmd jobs the script's peak RSS lives on `.batch`,
-        # but jobs that dispatch the workload via `srun` get the real RSS
-        # on numbered step rows (`.0`, `.1`, ...) while `.batch` only
-        # reflects the launcher. Pick the maximum across all non-empty
-        # step rows so both shapes report correctly.
-        non_empty = [r[4] for r in rows if r[4]]
-        max_rss = max(non_empty, key=_max_rss_to_bytes, default="")
-
-        state = parent[1]
-        if not state:
-            return None
-
-        return JobDetail(
-            state=state,
-            exit_code=parent[2],
-            elapsed=parent[3],
-            max_rss=max_rss,
-            req_mem=parent[5],
-        )
+        # One JobDetail per parent row, in sacct order. Array tasks
+        # (`12345_0`, `12345_1`) and het components (`12345+0`, `12345+1`)
+        # each appear as their own parent row, so every task/component is
+        # represented rather than only the first.
+        details: list[JobDetail] = []
+        for parent in rows:
+            job_id = parent[0]
+            if "." in job_id:
+                continue  # sub-step row; attributed to its parent below
+            state = parent[1]
+            if not state:
+                continue  # parent not yet recorded (no usable state)
+            # MaxRSS is per-step and the parent row is usually empty; for a
+            # plain job the peak RSS lives on `.batch`, while srun-dispatched
+            # work reports it on numbered steps (`.0`, ...). Aggregate the max
+            # over this task's own rows only — the parent plus its sub-steps
+            # (`<job_id>.<step>`) — so per-task RSS never bleeds across tasks.
+            group = [parent] + substeps.get(job_id, [])
+            non_empty = [r[4] for r in group if r[4]]
+            max_rss = max(non_empty, key=_max_rss_to_bytes, default="")
+            details.append(
+                JobDetail(
+                    job_id=job_id,
+                    state=state,
+                    exit_code=parent[2],
+                    elapsed=parent[3],
+                    max_rss=max_rss,
+                    req_mem=parent[5],
+                )
+            )
+        return details
 
 
 class PJM(Scheduler):
