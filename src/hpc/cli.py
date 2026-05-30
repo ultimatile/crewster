@@ -16,7 +16,7 @@ from .ssh import SSHManager
 from .sync import SyncManager
 from .job import JobManager, JobStatus
 from .run import RunManager
-from .scheduler import SchedulerError
+from .scheduler import JobDetail, SchedulerError
 
 
 class SchedulerChoice(str, Enum):
@@ -28,6 +28,19 @@ class SchedulerChoice(str, Enum):
 
     slurm = "slurm"
     pjm = "pjm"
+
+
+class DetailMode(str, Enum):
+    """CLI choices for ``hpc status --detail``.
+
+    ``summary`` (default) shows a single aggregate line for multi-task jobs;
+    ``tasks`` adds one accounting block per array task / het component. The
+    symmetric enum form leaves room for a future value (e.g. ``json``)
+    without a breaking flag rename.
+    """
+
+    summary = "summary"
+    tasks = "tasks"
 
 
 # Type alias for config option
@@ -374,8 +387,27 @@ def _normalize_sacct_state(state: str) -> str:
     return head.rstrip("+")
 
 
+def _print_detail_fields(d: JobDetail, indent: str) -> None:
+    """Print the four accounting fields, but only for terminal states where
+    they are meaningful. Non-terminal states (RUNNING / PENDING) print just
+    the state line at the call site."""
+    if _normalize_sacct_state(d.state) in _TERMINAL_SACCT_STATES:
+        print(f"{indent}ExitCode: {d.exit_code or '-'}")
+        print(f"{indent}Elapsed:  {d.elapsed or '-'}")
+        print(f"{indent}MaxRSS:   {d.max_rss or '-'}")
+        print(f"{indent}ReqMem:   {d.req_mem or '-'}")
+
+
 @app.command()
-def status(id: str = typer.Argument(None), config: ConfigOption = None):
+def status(
+    id: str = typer.Argument(None),
+    detail: DetailMode = typer.Option(
+        DetailMode.summary,
+        "--detail",
+        help="For array / het jobs: 'summary' (aggregate line) or 'tasks' (per-task blocks)",
+    ),
+    config: ConfigOption = None,
+):
     """Check job status (accepts run_id or job_id)"""
     config_path, project_root, hpc_config = _load_config(config)
 
@@ -405,13 +437,13 @@ def status(id: str = typer.Argument(None), config: ConfigOption = None):
     ssh = SSHManager(host=hpc_config.cluster.host)
     job_manager = JobManager(ssh_manager=ssh, config=hpc_config)
 
-    detail = job_manager.get_job_detail(job_id)
-    if detail is None or not detail.state:
-        # Scheduler does not support detail (PJM), or sacct has not yet
-        # recorded this job. Fall back to the existing single-line display.
-        # SchedulerError (parse-side absence) becomes a friendly message;
-        # other SSHError (real transport/command failure) propagates so
-        # legitimate failures stay visible to the user.
+    details = job_manager.get_job_detail(job_id)
+    if not details:
+        # Scheduler does not support detail (PJM -> None), or sacct has not yet
+        # recorded this job ([] -> no usable row). Fall back to the existing
+        # single-line display. SchedulerError (parse-side absence) becomes a
+        # friendly message; other SSHError (real transport/command failure)
+        # propagates so legitimate failures stay visible to the user.
         try:
             job_status = job_manager.get_job_status(job_id)
         except SchedulerError:
@@ -422,12 +454,27 @@ def status(id: str = typer.Argument(None), config: ConfigOption = None):
         print(f"Job {job_id}: {job_status.value}")
         return
 
-    print(f"Job {job_id}: {detail.state}")
-    if _normalize_sacct_state(detail.state) in _TERMINAL_SACCT_STATES:
-        print(f"  ExitCode: {detail.exit_code or '-'}")
-        print(f"  Elapsed:  {detail.elapsed or '-'}")
-        print(f"  MaxRSS:   {detail.max_rss or '-'}")
-        print(f"  ReqMem:   {detail.req_mem or '-'}")
+    if len(details) == 1:
+        # Single job: unchanged from the pre-array display.
+        d = details[0]
+        print(f"Job {job_id}: {d.state}")
+        _print_detail_fields(d, indent="  ")
+        return
+
+    # Array / het job: always surface mixed outcomes via an aggregate line so
+    # a failed task is never hidden behind the first task's state. Counts are
+    # grouped by state in first-appearance order.
+    counts: dict[str, int] = {}
+    for d in details:
+        counts[d.state] = counts.get(d.state, 0) + 1
+    unit = "components" if any("+" in d.job_id for d in details) else "tasks"
+    breakdown = ", ".join(f"{n} {state}" for state, n in counts.items())
+    print(f"Job {job_id}: {len(details)} {unit} ({breakdown})")
+
+    if detail == DetailMode.tasks:
+        for d in details:
+            print(f"  {d.job_id}: {d.state}")
+            _print_detail_fields(d, indent="    ")
 
 
 @app.command(name="list")

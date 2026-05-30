@@ -306,13 +306,16 @@ def test_status_prints_sacct_fields_for_terminal_job(cli_runner, temp_dir, monke
 
     with patch("hpc.cli.JobManager") as MockJobManager:
         instance = MockJobManager.return_value
-        instance.get_job_detail.return_value = JobDetail(
-            state="OUT_OF_MEMORY",
-            exit_code="0:125",
-            elapsed="00:01:23",
-            max_rss="1024K",
-            req_mem="16Gn",
-        )
+        instance.get_job_detail.return_value = [
+            JobDetail(
+                job_id="12345678",
+                state="OUT_OF_MEMORY",
+                exit_code="0:125",
+                elapsed="00:01:23",
+                max_rss="1024K",
+                req_mem="16Gn",
+            )
+        ]
         result = cli_runner.invoke(app, ["status", "12345678"])
 
     assert result.exit_code == 0
@@ -332,13 +335,16 @@ def test_status_omits_sacct_fields_for_running_job(cli_runner, temp_dir, monkeyp
 
     with patch("hpc.cli.JobManager") as MockJobManager:
         instance = MockJobManager.return_value
-        instance.get_job_detail.return_value = JobDetail(
-            state="RUNNING",
-            exit_code="0:0",
-            elapsed="00:00:30",
-            max_rss="",
-            req_mem="16Gn",
-        )
+        instance.get_job_detail.return_value = [
+            JobDetail(
+                job_id="12345678",
+                state="RUNNING",
+                exit_code="0:0",
+                elapsed="00:00:30",
+                max_rss="",
+                req_mem="16Gn",
+            )
+        ]
         result = cli_runner.invoke(app, ["status", "12345678"])
 
     assert result.exit_code == 0
@@ -397,19 +403,92 @@ def test_status_normalizes_decorated_cancelled_state(cli_runner, temp_dir, monke
 
     with patch("hpc.cli.JobManager") as MockJobManager:
         instance = MockJobManager.return_value
-        instance.get_job_detail.return_value = JobDetail(
-            state="CANCELLED by 12345",
-            exit_code="0:15",
-            elapsed="00:00:42",
-            max_rss="",
-            req_mem="8Gn",
-        )
+        instance.get_job_detail.return_value = [
+            JobDetail(
+                job_id="12345678",
+                state="CANCELLED by 12345",
+                exit_code="0:15",
+                elapsed="00:00:42",
+                max_rss="",
+                req_mem="8Gn",
+            )
+        ]
         result = cli_runner.invoke(app, ["status", "12345678"])
 
     assert result.exit_code == 0
     assert "Job 12345678: CANCELLED by 12345" in result.stdout
     assert "ExitCode: 0:15" in result.stdout
     assert "MaxRSS:   -" in result.stdout
+
+
+def test_status_array_job_aggregate_line_by_default(cli_runner, temp_dir, monkeypatch):
+    """Issue #16: a multi-task array surfaces mixed outcomes via an aggregate
+    line by default, never collapsing to the first task's state. No per-task
+    accounting fields without --detail tasks."""
+    from hpc.scheduler import JobDetail
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = [
+            JobDetail("12345_0", "COMPLETED", "0:0", "00:01:00", "1024K", "16Gn"),
+            JobDetail("12345_1", "COMPLETED", "0:0", "00:01:00", "1024K", "16Gn"),
+            JobDetail("12345_2", "OUT_OF_MEMORY", "0:125", "00:00:30", "2048K", "16Gn"),
+        ]
+        result = cli_runner.invoke(app, ["status", "12345"])
+
+    assert result.exit_code == 0
+    assert "Job 12345: 3 tasks (2 COMPLETED, 1 OUT_OF_MEMORY)" in result.stdout
+    # No per-task drill-down in the default (summary) mode.
+    assert "12345_2:" not in result.stdout
+    assert "ExitCode" not in result.stdout
+
+
+def test_status_array_job_per_task_blocks_with_detail_tasks(
+    cli_runner, temp_dir, monkeypatch
+):
+    """--detail tasks adds one accounting block per task, labeled by the
+    canonical JobID, with terminal fields shown per task."""
+    from hpc.scheduler import JobDetail
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = [
+            JobDetail("12345_0", "COMPLETED", "0:0", "00:01:00", "1024K", "16Gn"),
+            JobDetail("12345_1", "OUT_OF_MEMORY", "0:125", "00:00:30", "2048K", "16Gn"),
+        ]
+        result = cli_runner.invoke(app, ["status", "12345", "--detail", "tasks"])
+
+    assert result.exit_code == 0
+    assert "Job 12345: 2 tasks (1 COMPLETED, 1 OUT_OF_MEMORY)" in result.stdout
+    assert "12345_0: COMPLETED" in result.stdout
+    assert "12345_1: OUT_OF_MEMORY" in result.stdout
+    # Per-task accounting for each terminal task.
+    assert "MaxRSS:   1024K" in result.stdout
+    assert "MaxRSS:   2048K" in result.stdout
+
+
+def test_status_empty_detail_list_falls_back(cli_runner, temp_dir, monkeypatch):
+    """An empty detail list (supported scheduler, no row yet) falls back to the
+    single-line status display, same as the None (unsupported) case."""
+    from hpc.job import JobStatus
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = []
+        instance.get_job_status.return_value = JobStatus.PENDING
+        result = cli_runner.invoke(app, ["status", "12345678"])
+
+    assert result.exit_code == 0
+    assert "Job 12345678: PENDING" in result.stdout
 
 
 def test_wait_reports_unknown_state_and_exits_nonzero(
