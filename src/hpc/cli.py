@@ -463,10 +463,14 @@ def status(
 
     # Array / het job: always surface mixed outcomes via an aggregate line so
     # a failed task is never hidden behind the first task's state. Counts are
-    # grouped by state in first-appearance order.
+    # grouped by normalized state in first-appearance order, so Slurm
+    # decorations (`CANCELLED+`, `CANCELLED by <uid>`) collapse into one bucket
+    # instead of fragmenting the breakdown; per-task blocks below keep the raw
+    # state.
     counts: dict[str, int] = {}
     for d in details:
-        counts[d.state] = counts.get(d.state, 0) + 1
+        key = _normalize_sacct_state(d.state)
+        counts[key] = counts.get(key, 0) + 1
     unit = "components" if any("+" in d.job_id for d in details) else "tasks"
     breakdown = ", ".join(f"{n} {state}" for state, n in counts.items())
     print(f"Job {job_id}: {len(details)} {unit} ({breakdown})")

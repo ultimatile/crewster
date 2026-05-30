@@ -473,6 +473,29 @@ def test_status_array_job_per_task_blocks_with_detail_tasks(
     assert "MaxRSS:   2048K" in result.stdout
 
 
+def test_status_array_aggregate_groups_normalized_states(
+    cli_runner, temp_dir, monkeypatch
+):
+    """Decorated Slurm states (CANCELLED+ / CANCELLED by <uid>) must collapse
+    into one aggregate bucket rather than fragmenting the breakdown."""
+    from hpc.scheduler import JobDetail
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("hpc.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = [
+            JobDetail("12345_0", "CANCELLED+", "0:15", "00:00:03", "", "8Gn"),
+            JobDetail("12345_1", "CANCELLED by 4011", "0:15", "00:00:03", "", "8Gn"),
+            JobDetail("12345_2", "COMPLETED", "0:0", "00:01:00", "1024K", "8Gn"),
+        ]
+        result = cli_runner.invoke(app, ["status", "12345"])
+
+    assert result.exit_code == 0
+    assert "Job 12345: 3 tasks (2 CANCELLED, 1 COMPLETED)" in result.stdout
+
+
 def test_status_empty_detail_list_falls_back(cli_runner, temp_dir, monkeypatch):
     """An empty detail list (supported scheduler, no row yet) falls back to the
     single-line status display, same as the None (unsupported) case."""
