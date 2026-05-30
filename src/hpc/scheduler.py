@@ -236,11 +236,19 @@ class Slurm(Scheduler):
         return JobStatus.COMPLETED
 
     def detail_cmd(self, job_id: str) -> list[str] | None:
+        # `-P` changes only the field separator; it does NOT disable sacct's
+        # per-field column widths, so State and JobID are still truncated to
+        # their (~10-char) defaults — `OUT_OF_MEMORY` -> `OUT_OF_ME+`, and a
+        # long array-task `JobID` -> `12345_1000.b+`. A truncated State breaks
+        # state grouping / terminal-field gating; a truncated JobID breaks the
+        # `.`-based parent/sub-step partition. Widen both (as status_cmd does
+        # for State); parsable output is not padded, so widening only raises
+        # the truncation ceiling.
         return [
             "sacct",
             "-j",
             job_id,
-            "--format=JobID,State,ExitCode,Elapsed,MaxRSS,ReqMem",
+            "--format=JobID%30,State%30,ExitCode,Elapsed,MaxRSS,ReqMem",
             "--noheader",
             "-P",
         ]

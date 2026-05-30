@@ -328,7 +328,9 @@ class TestSlurmDetailCmd:
         assert cmd is not None
         assert cmd[0] == "sacct"
         assert "12345" in cmd
-        assert "--format=JobID,State,ExitCode,Elapsed,MaxRSS,ReqMem" in cmd
+        # State and JobID are widened so sacct does not truncate long values
+        # (OUT_OF_MEMORY, long array-task JobIDs) under -P.
+        assert "--format=JobID%30,State%30,ExitCode,Elapsed,MaxRSS,ReqMem" in cmd
         assert "--noheader" in cmd
         assert "-P" in cmd
 
