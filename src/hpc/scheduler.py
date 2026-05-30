@@ -263,6 +263,18 @@ class Slurm(Scheduler):
                 continue
             rows.append(fields[:6])
 
+        # A bracket-range JobID (e.g. `12345_[2-99]`) is sacct's compressed
+        # summary of un-launched array elements. Its presence means the array
+        # is only partially launched, so a per-task accounting view would be
+        # incomplete: the range can neither be counted as one task (it stands
+        # for many) nor silently dropped (that would hide pending tasks and
+        # misreport, e.g., a half-pending array as COMPLETED). Defer the whole
+        # job to the caller's aggregate-status fallback by returning no detail
+        # rows; complete per-task detail returns once every element has
+        # launched (no range row remains).
+        if any("[" in r[0] for r in rows):
+            return []
+
         # One JobDetail per parent row, in sacct order. Array tasks
         # (`12345_0`, `12345_1`) and het components (`12345+0`, `12345+1`)
         # each appear as their own parent row, so every task/component is
@@ -272,14 +284,6 @@ class Slurm(Scheduler):
             job_id = parent[0]
             if "." in job_id:
                 continue  # sub-step row; attributed to its parent below
-            if "[" in job_id:
-                # A bracket-range JobID (e.g. `12345_[2-99]`) is sacct's
-                # compressed summary of un-launched array elements, not one
-                # real task — counting it as a single task would misreport
-                # the breakdown. Such elements have not run and carry no
-                # accounting, so they are skipped; a fully-pending array thus
-                # yields [] and falls back to the single-line status display.
-                continue
             state = parent[1]
             if not state:
                 continue  # parent not yet recorded (no usable state)

@@ -459,24 +459,24 @@ class TestSlurmParseDetail:
             ),
         ]
 
-    def test_parse_skips_bracket_range_summary_row(self):
+    def test_parse_partially_pending_array_defers_to_fallback(self):
         # sacct compresses un-launched array elements into a bracket-range
-        # JobID (`12345_[2-9]`). It is a summary of many pending tasks, not a
-        # single task, so it must not be counted as one — only the launched
-        # tasks (which carry accounting) are returned.
+        # JobID (`12345_[2-9]`). While such a row is present the array is only
+        # partially launched, so a per-task view is incomplete. parse_detail
+        # returns [] for the whole job so the CLI shows the aggregate status
+        # instead of misreporting (e.g. a half-pending array as COMPLETED).
         output = (
             "12345_0|COMPLETED|0:0|00:01:00||16Gn\n"
             "12345_0.batch|COMPLETED|0:0|00:01:00|1024K|16Gn\n"
             "12345_1|RUNNING|0:0|00:00:30||16Gn\n"
             "12345_[2-9]|PENDING|0:0|00:00:00||16Gn\n"
         )
-        details = Slurm().parse_detail(output)
-        assert [d.job_id for d in details] == ["12345_0", "12345_1"]
+        assert Slurm().parse_detail(output) == []
 
     def test_parse_fully_pending_array_returns_empty_list(self):
         # An array with no launched tasks yet shows only the bracket-range
-        # row; with that skipped, parse_detail returns [] so the CLI falls
-        # back to the single-line status display.
+        # row, so parse_detail returns [] and the CLI falls back to the
+        # single-line status display.
         output = "12345_[0-9]|PENDING|0:0|00:00:00||16Gn\n"
         assert Slurm().parse_detail(output) == []
 
