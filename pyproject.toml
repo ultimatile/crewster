@@ -1,6 +1,6 @@
 [project]
 name = "hpc"
-version = "0.5.0"
+version = "0.6.0"
 description = "an automation CLI tool for HPC workflow."
 readme = "README.md"
 requires-python = ">=3.11"
