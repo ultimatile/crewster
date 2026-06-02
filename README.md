@@ -1,6 +1,6 @@
 # hpc
 
-One-stop lightweight wrapper for seamless remote-HPC dev-loop for coding agents and humans: sync the working tree, run a quick verification job (Slurm/PJM), pull results.
+A CLI that makes a remote HPC cluster feel local — sync your working tree, run a quick job (Slurm/PJM), pull results.
 
 ## Why not Snakemake?
 
