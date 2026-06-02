@@ -1,7 +1,7 @@
 [project]
 name = "hpc"
 version = "0.6.0"
-description = "an automation CLI tool for HPC workflow."
+description = "One-stop lightweight wrapper giving coding agents and humans a seamless remote-HPC dev loop: sync, run a quick job (Slurm/PJM), pull results."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
