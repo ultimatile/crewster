@@ -11,7 +11,47 @@ from hpc.config import (
     HpcConfig,
     ConfigManager,
     find_config,
+    _validate_dq_shell_value,
 )
+
+
+class TestDqShellValueValidator:
+    """The shared validator guarding double-quoted shell contexts
+    (`export KEY="..."`, `cd "..."`)."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            'a"; touch /tmp/pwned; echo "',  # quote breakout
+            "$(touch /tmp/pwned)",  # command substitution
+            "`touch /tmp/pwned`",  # backtick substitution
+            "${BAR@P}",  # prompt re-expansion bypass
+            "${!BAR}",  # indirect expansion
+            "${BAR:-$(x)}",  # default-value form smuggling $(
+            "$((1 + 1))",  # arithmetic expansion
+            "a\nb",  # newline
+            "a\x00b",  # NUL
+            "a\\b",  # backslash escape
+        ],
+    )
+    def test_rejects_unsafe(self, value):
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            _validate_dq_shell_value(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "$HOME",
+            "${USER}",
+            "${SLURM_CPUS_PER_TASK}",
+            "/scratch/${USER}/proj",
+            "/scratch/user/proj",
+            "02:00:00",
+            "plain",
+        ],
+    )
+    def test_allows_safe(self, value):
+        _validate_dq_shell_value(value)  # must not raise
 
 
 class TestClusterConfig:
@@ -53,13 +93,49 @@ class TestEnvConfig:
 
     def test_exports_rejects_command_substitution_dollar(self):
         config = EnvConfig(exports={"FOO": "$(rm -rf /)"})
-        with pytest.raises(ValueError, match="Command substitution"):
+        with pytest.raises(ValueError, match="Unsafe characters"):
             config.get_setup_commands()
 
     def test_exports_rejects_command_substitution_backtick(self):
         config = EnvConfig(exports={"FOO": "`rm -rf /`"})
-        with pytest.raises(ValueError, match="Command substitution"):
+        with pytest.raises(ValueError, match="Unsafe characters"):
             config.get_setup_commands()
+
+    def test_exports_rejects_double_quote_breakout(self):
+        # The value is rendered inside `export KEY="<value>"`; a literal `"`
+        # closes the quote and turns the rest into commands. The pre-whitelist
+        # validator (which blocked only `$(` / backtick) let this through.
+        config = EnvConfig(exports={"FOO": 'x"; touch /tmp/pwned; echo "'})
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_exports_rejects_prompt_expansion(self):
+        # `${VAR@P}` re-evaluates its value as a prompt string, performing
+        # command substitution assembled from otherwise-allowed values — a
+        # bypass no blocklist of `$(` / backtick can catch.
+        config = EnvConfig(exports={"FOO": "${BAR@P}"})
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_exports_rejects_newline(self):
+        config = EnvConfig(exports={"FOO": "a\nb"})
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_exports_rejects_nul(self):
+        config = EnvConfig(exports={"FOO": "a\x00b"})
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_exports_allows_simple_variable_references(self):
+        # Simple `$VAR` / `${VAR}` parameter references must survive — they are
+        # the intended remote-expansion use case.
+        config = EnvConfig(
+            exports={"HOME_REF": "$HOME", "NESTED": "/scratch/${USER}/out"}
+        )
+        cmds = config.get_setup_commands()
+        assert 'export HOME_REF="$HOME"' in cmds
+        assert 'export NESTED="/scratch/${USER}/out"' in cmds
 
     def test_exports_rejects_invalid_key(self):
         config = EnvConfig(exports={"FOO;BAR": "value"})
@@ -92,6 +168,25 @@ class TestSlurmConfig:
         with pytest.raises(ValueError, match="Newline and NUL"):
             SlurmConfig(submit_options=["--opt\x00malicious"])
 
+    def test_slurm_config_rejects_newline_in_option_value(self):
+        # options render into `#SBATCH --key=value` directive lines; a newline
+        # in the value injects an executable script line.
+        with pytest.raises(ValueError, match="Newline and NUL"):
+            SlurmConfig(options={"partition": "gpu\ntouch /tmp/pwned"})
+
+    def test_slurm_config_rejects_newline_in_option_key(self):
+        with pytest.raises(ValueError, match="Newline and NUL"):
+            SlurmConfig(options={"part\nition": "gpu"})
+
+    def test_slurm_config_rejects_nul_in_option_value(self):
+        with pytest.raises(ValueError, match="Newline and NUL"):
+            SlurmConfig(options={"partition": "gpu\x00x"})
+
+    def test_slurm_config_allows_int_option_value(self):
+        # int values cannot carry control chars; the validator must skip them.
+        config = SlurmConfig(options={"nodes": 1, "time": "02:00:00"})
+        assert config.options["nodes"] == 1
+
 
 class TestPjmConfig:
     def test_pjm_config_defaults(self):
@@ -106,6 +201,19 @@ class TestPjmConfig:
     def test_pjm_config_rejects_newline_in_submit_options(self):
         with pytest.raises(ValueError, match="Newline and NUL"):
             PjmConfig(submit_options=["--opt\nmalicious"])
+
+    def test_pjm_config_rejects_newline_in_option_element(self):
+        # Each inner-list element can reach a `#PJM` directive line.
+        with pytest.raises(ValueError, match="Newline and NUL"):
+            PjmConfig(options=[["-L", "node=1\ntouch /tmp/pwned"]])
+
+    def test_pjm_config_rejects_nul_in_option_element(self):
+        with pytest.raises(ValueError, match="Newline and NUL"):
+            PjmConfig(options=[["-L", "node=1\x00x"]])
+
+    def test_pjm_config_allows_normal_options(self):
+        config = PjmConfig(options=[["-L", "node=1"], ["-g", "myaccount"]])
+        assert config.options[0] == ["-L", "node=1"]
 
 
 class TestHpcConfig:

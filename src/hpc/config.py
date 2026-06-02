@@ -1,5 +1,6 @@
 """Configuration management"""
 
+import re
 import shlex
 import sys
 import tomllib
@@ -20,10 +21,46 @@ def _validate_arg(arg: str) -> None:
         raise ValueError(f"Shell special characters not allowed: {bad}")
 
 
+# Values rendered into a double-quoted shell context — ``export KEY="<value>"``
+# in the job script and ``cd "<job_workdir>"`` — must still permit remote
+# parameter expansion (``${USER}``, ``${SLURM_CPUS_PER_TASK}``) yet admit no
+# path to command execution. Inside double quotes the only execution vectors
+# are command substitution (``$(`` / backtick), arithmetic expansion (``$((``),
+# prompt re-expansion (``${x@P}``), and indirect expansion (``${!x}``); bash
+# does NOT re-scan the result of a parameter expansion, so a value that merely
+# contains ``$(...)`` as text stays inert without an ``@P`` trigger. A literal
+# ``"`` or backslash would close or escape out of the quotes.
+#
+# A blocklist of ``$(`` / backtick is therefore insufficient: ``${x@P}`` can
+# re-evaluate a payload assembled from other allowed values containing none of
+# the blocked substrings. Instead, strip the only forms we want (simple
+# ``$VAR`` / ``${VAR}`` references) and reject any residual ``$`` (rejected
+# conservatively: a leftover ``$`` may begin a dangerous ``$``-form, and a
+# bare literal ``$`` — inert but unneeded here — is not worth distinguishing),
+# backtick, ``"``, backslash, newline, or NUL.
+_SAFE_VAR_REF = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*")
+_DQ_FORBIDDEN = set('$`"\\\n\x00')
+
+
+def _validate_dq_shell_value(value: str, label: str = "value") -> None:
+    """Reject a double-quoted-context value that could execute a command.
+
+    See the module comment above for why a whitelist (strip simple variable
+    references, then forbid residual shell-active characters) is required
+    rather than a blocklist of ``$(`` / backtick.
+    """
+    residual = _SAFE_VAR_REF.sub("", value)
+    if bad := _DQ_FORBIDDEN & set(residual):
+        raise ValueError(
+            f"Unsafe characters in {label} (rendered in a double-quoted shell "
+            f"context): {''.join(sorted(bad))!r} in {value!r}"
+        )
+
+
 def _validate_export_value(value: str) -> None:
-    """Reject command substitution in export values while allowing variable references."""
-    if "$(" in value or "`" in value:
-        raise ValueError(f"Command substitution not allowed in export value: {value!r}")
+    """Reject export values that could execute a command while still allowing
+    simple variable references such as ``${SLURM_CPUS_PER_TASK}``."""
+    _validate_dq_shell_value(value, label="export value")
 
 
 def build_setup_commands(setup: list[SetupItem]) -> list[str]:
@@ -93,13 +130,20 @@ class SyncConfig(BaseModel):
     pull_dir: str = ""
 
 
+def _reject_directive_control_chars(value: str, label: str) -> None:
+    """Reject newline / NUL — the only characters that break a scheduler
+    directive (``#SBATCH`` / ``#PJM``) comment line into an executable
+    script line. In-line shell metacharacters are inert on a ``#``-comment
+    line, so unlike a double-quoted value (see ``_validate_dq_shell_value``)
+    nothing else needs rejecting here."""
+    if "\n" in value or "\x00" in value:
+        raise ValueError(f"Newline and NUL characters are not allowed in {label}")
+
+
 def _validate_submit_options(opts: list[str]) -> list[str]:
     """Reject only structurally unsafe characters in submit options."""
     for opt in opts:
-        if "\n" in opt or "\x00" in opt:
-            raise ValueError(
-                "Newline and NUL characters are not allowed in submit_options"
-            )
+        _reject_directive_control_chars(opt, "submit_options")
     return opts
 
 
@@ -114,6 +158,21 @@ class SlurmConfig(BaseModel):
     def check_submit_options(cls, v: list[str]) -> list[str]:
         return _validate_submit_options(v)
 
+    @field_validator("options")
+    @classmethod
+    def check_options(cls, v: dict[str, str | int]) -> dict[str, str | int]:
+        # ``options`` render into the job-script directive lines
+        # (``#SBATCH --key=value``); a newline injects an executable script
+        # line, exactly the hazard ``submit_options`` already guards against
+        # (those are passed as submit-command argv, but share the same ban on
+        # structural control chars). Both the key and a string value reach the
+        # rendered line; an int value cannot carry control characters.
+        for key, value in v.items():
+            _reject_directive_control_chars(key, "slurm.options keys")
+            if isinstance(value, str):
+                _reject_directive_control_chars(value, "slurm.options values")
+        return v
+
 
 class PjmConfig(BaseModel):
     """PJM job configuration"""
@@ -125,6 +184,18 @@ class PjmConfig(BaseModel):
     @classmethod
     def check_submit_options(cls, v: list[str]) -> list[str]:
         return _validate_submit_options(v)
+
+    @field_validator("options")
+    @classmethod
+    def check_options(cls, v: list[list[str]]) -> list[list[str]]:
+        # Every inner-list element can reach a ``#PJM`` directive line; reject
+        # the newline / NUL that would terminate the comment line. The renderer
+        # currently emits only ``opt[0]`` / ``opt[1]``, but validating every
+        # element matches ``submit_options``' policy and is conservative.
+        for opt in v:
+            for element in opt:
+                _reject_directive_control_chars(element, "pjm.options elements")
+        return v
 
 
 class HpcConfig(BaseModel):

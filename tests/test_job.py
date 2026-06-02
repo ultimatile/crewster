@@ -450,7 +450,7 @@ class TestJobManagerTemplate:
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         script = manager._render_job_script(run)
-        assert "cd /scratch/user/proj" in script
+        assert 'cd "/scratch/user/proj"' in script
 
     def test_render_job_script_with_subdirectory(self, mock_ssh_manager, sample_config):
         """cwd_relative appends subdirectory to workdir for job cd"""
@@ -459,9 +459,34 @@ class TestJobManagerTemplate:
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         script = manager._render_job_script(run, cwd_relative=Path("runs/bench1"))
-        assert "cd /scratch/user/proj/runs/bench1" in script
+        assert 'cd "/scratch/user/proj/runs/bench1"' in script
         # Output paths still use base workdir
         assert "--output=/scratch/user/proj/.hpc/runs/test_run" in script
+
+    def test_render_job_script_quotes_workdir(self, mock_ssh_manager, sample_config):
+        """The `cd` line is double-quoted so `;` / whitespace in a workdir stay
+        inert while `${USER}`-style expansion is preserved."""
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
+        script = manager._render_job_script(run)
+        assert 'cd "' in script
+        assert "cd /scratch" not in script  # never the bare, unquoted form
+
+    def test_render_job_script_rejects_cwd_relative_breakout(
+        self, mock_ssh_manager, sample_config
+    ):
+        """A maliciously-named local subdir must not escape the quoted `cd`;
+        the render choke point validates the combined job_workdir."""
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        from hpc.run import RunConfig
+
+        run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            manager._render_job_script(
+                run, cwd_relative=Path('a"; touch /tmp/pwned; echo "b')
+            )
 
     def test_render_job_script_pjm_emits_pjm_output_directives(self, mock_ssh_manager):
         """PJM jobs must emit ``#PJM -o`` / ``#PJM -e`` for the bookkeeping
@@ -791,7 +816,7 @@ class TestJobManagerHoistsUserDirectives:
 
         # User directive lands in the prologue, before `cd`.
         array_idx = script.index("#SBATCH --array=1-10%5")
-        cd_idx = script.index("cd /scratch/user/proj")
+        cd_idx = script.index('cd "/scratch/user/proj"')
         assert array_idx < cd_idx
         # And before the template's hardcoded --output= bookkeeping line, so
         # hpc's run-tracking output path always wins over any user override.
@@ -817,7 +842,7 @@ class TestJobManagerHoistsUserDirectives:
         run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
         script = manager._render_job_script(run)
 
-        cd_idx = script.index("cd /scratch/user/proj")
+        cd_idx = script.index('cd "/scratch/user/proj"')
         for directive in ('#PJM -L "rscgrp=small"', "#PJM -j", "#PJM -N myjob"):
             assert directive in script
             assert script.index(directive) < cd_idx
@@ -888,6 +913,6 @@ class TestJobManagerHoistsUserDirectives:
         # The rendered script is piped to sbatch via input_text.
         call_args = mock_ssh_manager.run_command.call_args
         script = call_args.kwargs["input_text"]
-        cd_idx = script.index("cd /scratch/user/proj")
+        cd_idx = script.index('cd "/scratch/user/proj"')
         assert script.index("#SBATCH --array=1-5") < cd_idx
         assert script.count("#!/bin/bash") == 1
