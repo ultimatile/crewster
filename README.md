@@ -2,6 +2,19 @@
 
 An automation CLI tool for HPC workflow: source code/data sync and scheduler job management (Slurm/PJM).
 
+## Why not Snakemake?
+
+hpc is **not** a job orchestrator, and does not try to be one.
+
+Its responsibility is the inner development loop against a remote environment: you are actively editing code — often *before it is committed* — and you want to push the current working tree to a remote HPC environment and run a quick test there, repeatedly and fast. [Snakemake](https://github.com/snakemake/snakemake), [Nextflow](https://github.com/nextflow-io/nextflow), and similar tools assume a defined, committed pipeline and manage its execution graph; they serve the *other* end of the lifecycle.
+
+They are complementary, not competing:
+
+- **hpc** — frequent pre-commit source sync, single test / verification runs, a tight edit → run → observe loop. Built for a coding agent iterating against a remote environment.
+- **A workflow runner** — dependency graphs, multi-step pipelines, retries, production runs.
+
+If you need to orchestrate a complex production run, use a real orchestrator — and you can still launch it *through* hpc (`hpc submit "snakemake ..."`): hpc handles the transport (sync up, run, pull results) and treats the workflow as opaque user code. hpc owns the transport and the dev loop, never the run graph.
+
 ## Installation
 
 One-shot execution (no install):
