@@ -5,7 +5,7 @@ from pathlib import Path
 
 from jinja2 import Template
 
-from .config import HpcConfig
+from .config import HpcConfig, _validate_dq_shell_value
 from .ssh import SSHManager
 from .run import RunConfig
 from .scheduler import JobDetail, JobStatus, SchedulerError, get_scheduler
@@ -34,7 +34,7 @@ JOB_TEMPLATE = """#!/bin/bash
 {{ directive }}
 {% endfor %}
 
-cd {{ job_workdir }}
+cd "{{ job_workdir }}"
 
 {% for cmd in setup_commands %}
 {{ cmd }}
@@ -153,6 +153,13 @@ class JobManager:
         template = Template(JOB_TEMPLATE)
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
         job_workdir = str(Path(workdir) / cwd_relative)
+        # job_workdir is rendered into `cd "<job_workdir>"` and undergoes remote
+        # ${USER}-style expansion. It combines three attacker-influenceable
+        # sources — cluster.workdir, the --workdir CLI override, and the local
+        # cwd_relative path — so validate the final combined string here. A
+        # ClusterConfig field validator alone would miss the override (assigned
+        # directly onto the model) and the cwd_relative component.
+        _validate_dq_shell_value(job_workdir, label="job workdir")
         run_dir = f"{workdir}/.hpc/runs/{run.run_id}"
         options = (
             self.config.pjm.options
@@ -203,6 +210,10 @@ class JobManager:
         """
         template = Template(JOB_TEMPLATE)
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
+        # Validated for the same reason as in _render_job_script: workdir is
+        # rendered into `cd "<workdir>"`. This legacy path has no cwd_relative
+        # component, so the resolved workdir is the full job working directory.
+        _validate_dq_shell_value(workdir, label="job workdir")
         run_dir = f"{workdir}/.hpc/runs/job"
         options = (
             self.config.pjm.options
