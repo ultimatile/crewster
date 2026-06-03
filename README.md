@@ -6,7 +6,7 @@ A CLI that makes a remote HPC cluster feel local — sync your working tree, run
 
 hpc is **not** a job orchestrator, and does not try to be one.
 
-Its responsibility is the inner development loop against a remote environment: you are actively editing code — often *before it is committed* — and you want to push the current working tree to a remote HPC environment and run a quick test there, repeatedly and fast. [Snakemake](https://github.com/snakemake/snakemake), [Nextflow](https://github.com/nextflow-io/nextflow), and similar tools assume a defined, committed pipeline and manage its execution graph; they serve the *other* end of the lifecycle.
+Its responsibility is the inner development loop against a remote environment: you are actively editing code — often *before it is committed* — and you want to push the current working tree to a remote HPC environment and run a quick test there, repeatedly and quickly. [Snakemake](https://github.com/snakemake/snakemake), [Nextflow](https://github.com/nextflow-io/nextflow), and similar tools assume a defined, committed pipeline and manage its execution graph; they serve the *other* end of the lifecycle.
 
 They are complementary, not competing:
 
