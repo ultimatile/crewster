@@ -20,13 +20,13 @@ If you need to orchestrate a complex production run, use a real orchestrator —
 One-shot execution (no install):
 
 ```bash
-uvx --from git+https://github.com/ultimatile/hpc crewster
+uvx --from git+https://github.com/ultimatile/crewster crewster
 ```
 
 Permanent install:
 
 ```bash
-uv tool install git+https://github.com/ultimatile/hpc
+uv tool install git+https://github.com/ultimatile/crewster
 ```
 
 ## Quick Start

@@ -73,7 +73,7 @@ class TestJobManagerWait:
     def test_wait_keeps_polling_on_empty_status_output(
         self, mock_ssh_manager, sample_config
     ):
-        # Regression guard for https://github.com/ultimatile/hpc/issues/13:
+        # Regression guard for https://github.com/ultimatile/crewster/issues/13:
         # a freshly-submitted job whose sacct row hasn't been indexed yet
         # returns empty stdout. The old parse_status mapped that to FAILED
         # and wait_for_job exited prematurely; SchedulerError (subclass

@@ -57,7 +57,7 @@ publish: ## Create GitHub release
 		echo "$(GREEN)GitHub release v$(PUB_VERSION) published$(RESET)"; \
 	else \
 		echo "$(YELLOW)GitHub CLI not found. Create release manually:$(RESET)"; \
-		echo "   https://github.com/ultimatile/hpc/releases/new?tag=v$(PUB_VERSION)"; \
+		echo "   https://github.com/ultimatile/crewster/releases/new?tag=v$(PUB_VERSION)"; \
 	fi
 
 version-bump: ## Update version in pyproject.toml
