@@ -1,6 +1,7 @@
 """CLI command definitions"""
 
 import os
+import sys
 import tomllib
 from enum import Enum
 from pathlib import Path
@@ -20,7 +21,7 @@ from .scheduler import JobDetail, SchedulerError
 
 
 class SchedulerChoice(str, Enum):
-    """CLI choices for ``hpc init --scheduler``.
+    """CLI choices for ``crewster init --scheduler``.
 
     ``str`` mix-in lets typer expose the enum as constrained string choices
     and lets ``.value`` be passed straight into the TOML payload.
@@ -31,7 +32,7 @@ class SchedulerChoice(str, Enum):
 
 
 class DetailMode(str, Enum):
-    """CLI choices for ``hpc status --detail``.
+    """CLI choices for ``crewster status --detail``.
 
     ``summary`` (default) shows a single aggregate line for multi-task jobs;
     ``tasks`` adds one accounting block per array task / het component. The
@@ -52,17 +53,55 @@ WorkdirOption = Annotated[
 ]
 
 
-def _resolve_config_path(config_path: Optional[Path], walk_up: bool = True) -> Path:
-    """Resolve config path: --config > $HPC_CONFIG > walk-up discovery > CWD"""
+def _warn_legacy(message: str) -> None:
+    """Print a yellow deprecation warning to stderr.
+
+    Matches the unknown-section warning style in ``config.py``. Used only for
+    the implicit legacy config paths (``$HPC_CONFIG`` and ``hpc.toml``
+    discovery); the read-only fallback they support is removed by v1.0.
+    """
+    print(f"\033[33mWarning: {message}\033[0m", file=sys.stderr)
+
+
+def _resolve_config_path(
+    config_path: Optional[Path],
+    walk_up: bool = True,
+    allow_legacy: bool = True,
+) -> Path:
+    """Resolve the config path.
+
+    Order: ``--config`` > ``$CREWSTER_CONFIG`` > ``$HPC_CONFIG`` > walk-up
+    discovery (``crewster.toml`` then legacy ``hpc.toml``) > CWD
+    ``crewster.toml``. The legacy env var and legacy filename are read-only
+    fallbacks that emit a deprecation warning and are removed by v1.0.
+
+    ``allow_legacy=False`` (used by ``init``) drops every legacy branch, so the
+    command never resolves to ``$HPC_CONFIG`` nor to an ``hpc.toml`` name and
+    can therefore never create the legacy file. An explicit ``--config`` is an
+    arbitrary user path and never triggers a deprecation warning regardless of
+    its filename.
+    """
     if config_path:
         return config_path
-    if env_config := os.environ.get("HPC_CONFIG"):
+    if env_config := os.environ.get("CREWSTER_CONFIG"):
+        return Path(env_config)
+    if allow_legacy and (env_config := os.environ.get("HPC_CONFIG")):
+        _warn_legacy(
+            "$HPC_CONFIG is deprecated; use $CREWSTER_CONFIG (removed in v1.0)"
+        )
         return Path(env_config)
     if walk_up:
-        found = find_config("hpc.toml")
+        names = ("crewster.toml", "hpc.toml") if allow_legacy else ("crewster.toml",)
+        found = find_config(names)
         if found is not None:
-            return found
-    return Path("hpc.toml")
+            path, name = found
+            if name == "hpc.toml":
+                _warn_legacy(
+                    f"{path} uses the legacy name 'hpc.toml'; "
+                    "rename to 'crewster.toml' (removed in v1.0)"
+                )
+            return path
+    return Path("crewster.toml")
 
 
 def _load_config(config_path: Optional[Path]) -> tuple[Path, Path, HpcConfig]:
@@ -77,15 +116,15 @@ def _load_config(config_path: Optional[Path]) -> tuple[Path, Path, HpcConfig]:
 
 
 def _get_user_config_path() -> Path:
-    """Get user config path from XDG_CONFIG_HOME/hpc/config.toml"""
+    """Get user config path from XDG_CONFIG_HOME/crewster/config.toml"""
     xdg_config = os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
-    return Path(xdg_config) / "hpc" / "config.toml"
+    return Path(xdg_config) / "crewster" / "config.toml"
 
 
 def _apply_xdg_with_filter(src: Path, dst: Path, scheduler: SchedulerChoice) -> None:
     """Project XDG user-config onto the active scheduler and write to ``dst``.
 
-    Drops the inactive scheduler's section so the resulting ``hpc.toml`` is
+    Drops the inactive scheduler's section so the resulting ``crewster.toml`` is
     consistent with ``--scheduler``, and forces ``cluster.scheduler`` to the
     active value. The source file itself is not modified.
 
@@ -129,7 +168,9 @@ def init(
     config: ConfigOption = None,
 ):
     """Initialize HPC project configuration"""
-    config_path = _resolve_config_path(config, walk_up=False)
+    # ``allow_legacy=False`` keeps init from ever resolving to $HPC_CONFIG or an
+    # hpc.toml name, so it writes crewster.toml only and never the legacy file.
+    config_path = _resolve_config_path(config, walk_up=False, allow_legacy=False)
     if config_path.exists():
         print(f"Config file already exists: {config_path}")
         return
@@ -219,7 +260,7 @@ def sync(
             if r.returncode == 255:
                 print(
                     "Error: SSH connection failed. "
-                    "Please check your SSH config and run 'hpc sync' again."
+                    "Please check your SSH config and run 'crewster sync' again."
                 )
             else:
                 print(f"Error: rsync failed with exit code {r.returncode}")
@@ -331,7 +372,7 @@ def submit(
     except ValueError:
         cwd_relative = Path(".")
 
-    runs_dir = project_root / ".hpc" / "runs"
+    runs_dir = project_root / ".crewster" / "runs"
     run_manager = RunManager(config=hpc_config, runs_dir=runs_dir)
     run = run_manager.create_run(cmd, git_commit=git_commit)
 
@@ -415,7 +456,7 @@ def status(
         print("Please specify a run_id or job_id")
         raise typer.Exit(1)
 
-    runs_dir = project_root / ".hpc" / "runs"
+    runs_dir = project_root / ".crewster" / "runs"
     run_manager = RunManager(config=hpc_config, runs_dir=runs_dir)
 
     # Try as run_id first, then as job_id
@@ -486,7 +527,7 @@ def list_runs(config: ConfigOption = None):
     """List all runs"""
     config_path, project_root, hpc_config = _load_config(config)
 
-    runs_dir = project_root / ".hpc" / "runs"
+    runs_dir = project_root / ".crewster" / "runs"
     run_manager = RunManager(config=hpc_config, runs_dir=runs_dir)
     runs = run_manager.list_runs()
 
@@ -516,7 +557,7 @@ def job_output(
     """Show job output (accepts run_id or job_id)"""
     config_path, project_root, hpc_config = _load_config(config)
 
-    runs_dir = project_root / ".hpc" / "runs"
+    runs_dir = project_root / ".crewster" / "runs"
     run_manager = RunManager(config=hpc_config, runs_dir=runs_dir)
 
     # Try as run_id first, then as job_id
@@ -551,7 +592,7 @@ def wait(id: str, config: ConfigOption = None):
     """Wait for a run to complete (accepts run_id or job_id)"""
     config_path, project_root, hpc_config = _load_config(config)
 
-    runs_dir = project_root / ".hpc" / "runs"
+    runs_dir = project_root / ".crewster" / "runs"
     run_manager = RunManager(config=hpc_config, runs_dir=runs_dir)
 
     # Try as run_id first, then as job_id

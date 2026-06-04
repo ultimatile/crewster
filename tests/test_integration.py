@@ -3,8 +3,8 @@
 from unittest.mock import patch, MagicMock
 
 
-from hpc.main import app
-from hpc import cli  # noqa: F401
+from crewster.main import app
+from crewster import cli  # noqa: F401
 
 
 class TestEndToEndWorkflow:
@@ -16,11 +16,11 @@ class TestEndToEndWorkflow:
         result = cli_runner.invoke(app, ["init"])
         assert result.exit_code == 0
 
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         assert config_path.exists()
 
         # Verify config is loadable
-        from hpc.config import ConfigManager
+        from crewster.config import ConfigManager
 
         manager = ConfigManager()
         config = manager.load_config(config_path)
@@ -46,7 +46,7 @@ class TestEndToEndWorkflow:
         cli_runner.invoke(app, ["init"])
 
         # Submit with mocked SSH
-        with patch("hpc.ssh.subprocess.run") as mock_run:
+        with patch("crewster.ssh.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout="12345678\n", stderr=""
             )
@@ -61,7 +61,7 @@ class TestEndToEndWorkflow:
         cli_runner.invoke(app, ["init"])
 
         # Status with mocked SSH
-        with patch("hpc.ssh.subprocess.run") as mock_run:
+        with patch("crewster.ssh.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout="RUNNING\n", stderr=""
             )
@@ -103,7 +103,7 @@ class TestErrorHandling:
         cli_runner.invoke(app, ["init"])
 
         # Modify it
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         original_content = config_path.read_text()
 
         # Try init again

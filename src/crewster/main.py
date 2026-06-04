@@ -15,7 +15,7 @@ def _generate_skill_reference(cli_app: typer.Typer) -> str:
     assert isinstance(typer_group, TyperGroup)
     lines = ["## Commands", ""]
     for name, cmd in sorted(typer_group.commands.items()):
-        lines.append(f"### `hpc {name}`")
+        lines.append(f"### `crewster {name}`")
         if cmd.help:
             lines.append(cmd.help)
         params = [
@@ -42,7 +42,7 @@ def _generate_skill_reference(cli_app: typer.Typer) -> str:
 
     from .config import HpcConfig
 
-    lines.append("## Configuration (hpc.toml)")
+    lines.append("## Configuration (crewster.toml)")
     lines.append("")
     for field_name, field_info in HpcConfig.model_fields.items():
         annotation = field_info.annotation
@@ -86,7 +86,7 @@ def _version_callback(value: bool):
         return
     from importlib import metadata
 
-    print(f"hpc {metadata.version('hpc')}")
+    print(f"crewster {metadata.version('crewster')}")
     raise typer.Exit()
 
 

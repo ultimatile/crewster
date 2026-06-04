@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-from hpc.config import (
+from crewster.config import (
     ClusterConfig,
     EnvConfig,
     SlurmConfig,
@@ -229,7 +229,7 @@ class TestHpcConfig:
 
 class TestConfigManager:
     def test_load_config_from_toml(self, temp_dir):
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         config_path.write_text("""
 [cluster]
 host = "myhpc"
@@ -259,7 +259,7 @@ gpus = 1
         assert config.slurm.options["gpus"] == 1
 
     def test_load_pjm_config_with_submit_options(self, temp_dir):
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         config_path.write_text("""
 [cluster]
 host = "myhpc"
@@ -277,7 +277,7 @@ submit_options = ["--no-check-directory"]
         assert config.pjm.options == [["-L", "node=12"], ["-s"]]
 
     def test_load_slurm_config_with_submit_options(self, temp_dir):
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         config_path.write_text("""
 [cluster]
 host = "myhpc"
@@ -298,10 +298,10 @@ partition = "gpu"
     def test_load_config_file_not_found(self):
         manager = ConfigManager()
         with pytest.raises(FileNotFoundError):
-            manager.load_config(Path("/nonexistent/hpc.toml"))
+            manager.load_config(Path("/nonexistent/crewster.toml"))
 
     def test_load_config_invalid_toml(self, temp_dir):
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         config_path.write_text("invalid toml [[[")
         manager = ConfigManager()
         with pytest.raises(Exception):
@@ -309,7 +309,7 @@ partition = "gpu"
 
     def test_generate_template(self, temp_dir):
         manager = ConfigManager()
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         manager.generate_template(config_path)
 
         assert config_path.exists()
@@ -321,7 +321,7 @@ partition = "gpu"
     def test_generate_template_pjm(self, temp_dir):
         """``scheduler="pjm"`` emits a PJM-shaped template."""
         manager = ConfigManager()
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         manager.generate_template(config_path, scheduler="pjm")
 
         assert config_path.exists()
@@ -340,7 +340,7 @@ partition = "gpu"
     def test_generate_template_rejects_unknown_scheduler(self, temp_dir):
         """Library-level guard against bypassing the CLI's enum constraint."""
         manager = ConfigManager()
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         with pytest.raises(ValueError, match="Unknown scheduler"):
             manager.generate_template(config_path, scheduler="lsf")
         assert not config_path.exists()
@@ -350,7 +350,7 @@ partition = "gpu"
         the ``ClusterConfig`` default, so the file is symmetric across
         schedulers."""
         manager = ConfigManager()
-        config_path = temp_dir / "hpc.toml"
+        config_path = temp_dir / "crewster.toml"
         manager.generate_template(config_path, scheduler="slurm")
 
         content = config_path.read_text()
@@ -359,20 +359,45 @@ partition = "gpu"
 
 class TestFindConfig:
     def test_find_config_in_cwd(self, temp_dir, monkeypatch):
-        (temp_dir / "hpc.toml").write_text("[cluster]\nhost='x'\nworkdir='/'")
+        (temp_dir / "crewster.toml").write_text("[cluster]\nhost='x'\nworkdir='/'")
         monkeypatch.chdir(temp_dir)
-        result = find_config("hpc.toml")
-        assert result == (temp_dir / "hpc.toml").resolve()
+        result = find_config()
+        assert result == ((temp_dir / "crewster.toml").resolve(), "crewster.toml")
 
     def test_find_config_in_parent(self, temp_dir, monkeypatch):
-        (temp_dir / "hpc.toml").write_text("[cluster]\nhost='x'\nworkdir='/'")
+        (temp_dir / "crewster.toml").write_text("[cluster]\nhost='x'\nworkdir='/'")
         child = temp_dir / "runs" / "bench1"
         child.mkdir(parents=True)
         monkeypatch.chdir(child)
-        result = find_config("hpc.toml")
-        assert result == (temp_dir / "hpc.toml").resolve()
+        result = find_config()
+        assert result == ((temp_dir / "crewster.toml").resolve(), "crewster.toml")
 
     def test_find_config_returns_none(self, temp_dir, monkeypatch):
         monkeypatch.chdir(temp_dir)
-        result = find_config("hpc.toml")
+        result = find_config()
         assert result is None
+
+    def test_find_config_reports_legacy_name(self, temp_dir, monkeypatch):
+        # The legacy name is still discovered, and the matched filename is
+        # surfaced so the caller can emit a deprecation warning.
+        (temp_dir / "hpc.toml").write_text("[cluster]\nhost='x'\nworkdir='/'")
+        monkeypatch.chdir(temp_dir)
+        result = find_config()
+        assert result == ((temp_dir / "hpc.toml").resolve(), "hpc.toml")
+
+    def test_find_config_prefers_crewster_in_same_dir(self, temp_dir, monkeypatch):
+        (temp_dir / "crewster.toml").write_text("x")
+        (temp_dir / "hpc.toml").write_text("x")
+        monkeypatch.chdir(temp_dir)
+        assert find_config()[1] == "crewster.toml"
+
+    def test_find_config_nearest_dir_wins(self, temp_dir, monkeypatch):
+        # A distant-ancestor crewster.toml must not shadow a nearer hpc.toml:
+        # nearest directory wins, preserving the git-like discovery invariant.
+        (temp_dir / "crewster.toml").write_text("x")
+        child = temp_dir / "sub"
+        child.mkdir()
+        (child / "hpc.toml").write_text("x")
+        monkeypatch.chdir(child)
+        result = find_config()
+        assert result == ((child / "hpc.toml").resolve(), "hpc.toml")

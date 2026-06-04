@@ -1,4 +1,4 @@
-"""Pytest configuration and fixtures for hpc tests"""
+"""Pytest configuration and fixtures for crewster tests"""
 
 import tempfile
 import shutil
@@ -26,12 +26,13 @@ def temp_dir():
 def reset_env_config(monkeypatch, tmp_path):
     """Isolate tests from real environment.
 
-    - ``HPC_CONFIG`` is cleared so tests don't accidentally consume a
-      developer-set override.
+    - ``CREWSTER_CONFIG`` and the legacy ``HPC_CONFIG`` are both cleared so
+      tests don't accidentally consume a developer-set override.
     - ``XDG_CONFIG_HOME`` is pinned to a fresh empty temp dir so
-      ``hpc init`` does not pick up the developer's real user-level
-      ``~/.config/hpc/config.toml``. Tests that exercise the
+      ``crewster init`` does not pick up the developer's real user-level
+      ``~/.config/crewster/config.toml``. Tests that exercise the
       XDG filter-merge path set their own ``XDG_CONFIG_HOME``.
     """
+    monkeypatch.delenv("CREWSTER_CONFIG", raising=False)
     monkeypatch.delenv("HPC_CONFIG", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-empty"))

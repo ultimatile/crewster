@@ -208,13 +208,23 @@ class HpcConfig(BaseModel):
     pjm: PjmConfig = PjmConfig()
 
 
-def find_config(filename: str = "hpc.toml") -> Path | None:
-    """Walk up from CWD to find config file, like git finds .git"""
+def find_config(
+    filenames: tuple[str, ...] = ("crewster.toml", "hpc.toml"),
+) -> tuple[Path, str] | None:
+    """Walk up from CWD to find a config file, like git finds .git.
+
+    ``filenames`` are checked in priority order *at each directory level*
+    during a single upward walk, so the nearest directory always wins and a
+    distant-ancestor ``crewster.toml`` never shadows a nearer legacy
+    ``hpc.toml``. Returns the resolved path together with the matched filename
+    (so the caller can warn only when the legacy name was hit), or ``None``.
+    """
     current = Path.cwd().resolve()
     while True:
-        candidate = current / filename
-        if candidate.is_file():
-            return candidate
+        for name in filenames:
+            candidate = current / name
+            if candidate.is_file():
+                return candidate, name
         parent = current.parent
         if parent == current:
             return None
@@ -281,8 +291,8 @@ class ConfigManager:
                     "modules": ["gcc/12.2.0"],
                 },
                 "sync": {
-                    "ignore": ["hpc.toml", ".git"],
-                    "ignore_push": [".hpc"],
+                    "ignore": ["crewster.toml", ".git"],
+                    "ignore_push": [".crewster"],
                 },
                 "pjm": {
                     "submit_options": [],
@@ -305,8 +315,8 @@ class ConfigManager:
                     "modules": ["gcc/12.2.0", "cuda/12.2"],
                 },
                 "sync": {
-                    "ignore": ["hpc.toml", ".git"],
-                    "ignore_push": [".hpc"],
+                    "ignore": ["crewster.toml", ".git"],
+                    "ignore_push": [".crewster"],
                 },
                 "slurm": {
                     "submit_options": [],

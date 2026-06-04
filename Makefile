@@ -1,4 +1,4 @@
-# Makefile for hpc release management
+# Makefile for crewster release management
 
 SHELL := /bin/bash
 .PHONY: help release-full release publish restore-branch clean-env
@@ -121,7 +121,7 @@ test: ## Run all tests
 	@uv run pytest -v
 
 typecheck: ## Run type checking
-	@uv run pyright src/hpc/
+	@uv run pyright src/crewster/
 
 lint: ## Run linting and formatting
 	@uv run ruff check

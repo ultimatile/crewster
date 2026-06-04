@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hpc.job import JobManager, JobStatus
-from hpc.ssh import SSHError, SSHManager
-from hpc.config import (
+from crewster.job import JobManager, JobStatus
+from crewster.ssh import SSHError, SSHManager
+from crewster.config import (
     HpcConfig,
     ClusterConfig,
     EnvConfig,

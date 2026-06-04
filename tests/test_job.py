@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hpc.job import JobManager, JobStatus, _extract_prologue_directives
-from hpc.scheduler import JobDetail, SchedulerError
-from hpc.ssh import SSHManager, SSHError
-from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, PjmConfig
+from crewster.job import JobManager, JobStatus, _extract_prologue_directives
+from crewster.scheduler import JobDetail, SchedulerError
+from crewster.ssh import SSHManager, SSHError
+from crewster.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, PjmConfig
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ class TestJobManagerSubmit:
 
     def test_submit_job_creates_run_dir_before_submission(self, mock_ssh_manager):
         # The rendered script's ``-o`` / ``--output=`` directives point
-        # under ``<workdir>/.hpc/runs/job/``; the scheduler must be able
+        # under ``<workdir>/.crewster/runs/job/``; the scheduler must be able
         # to open those paths, so the directory has to exist when pjsub /
         # sbatch consumes the script.
         config = HpcConfig(
@@ -122,7 +122,7 @@ class TestJobManagerSubmit:
         assert mkdir_idx < submit_idx
         assert calls[mkdir_idx].args[1] == [
             "-p",
-            "/scratch/user/proj/.hpc/runs/job",
+            "/scratch/user/proj/.crewster/runs/job",
         ]
 
     def test_submit_job_creates_run_dir_before_submission_slurm(self, mock_ssh_manager):
@@ -147,7 +147,7 @@ class TestJobManagerSubmit:
         assert mkdir_idx < submit_idx
         assert calls[mkdir_idx].args[1] == [
             "-p",
-            "/scratch/user/proj/.hpc/runs/job",
+            "/scratch/user/proj/.crewster/runs/job",
         ]
 
     def test_submit_job_includes_slurm_submit_options(self, mock_ssh_manager):
@@ -183,7 +183,7 @@ class TestJobManagerSubmit:
         mock_ssh_manager.run_command.return_value = MagicMock(
             stdout="[INFO] PJM 0000 pjsub Job 12345678 submitted.\n"
         )
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="python train.py", status="pending")
         manager.submit_run(run)
@@ -210,7 +210,7 @@ class TestJobManagerSubmit:
         mock_ssh_manager.run_command.return_value = MagicMock(
             stdout="[INFO] PJM 0000 pjsub Job 12345678 submitted.\n"
         )
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         manager.submit_run(run)
@@ -225,7 +225,7 @@ class TestJobManagerSubmit:
         assert mkdir_idx < submit_idx
         assert calls[mkdir_idx].args[1] == [
             "-p",
-            "/scratch/user/proj/.hpc/runs/test_run",
+            "/scratch/user/proj/.crewster/runs/test_run",
         ]
 
     def test_submit_run_creates_run_dir_before_submission_slurm(self, mock_ssh_manager):
@@ -237,7 +237,7 @@ class TestJobManagerSubmit:
         )
         manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
         mock_ssh_manager.run_command.return_value = MagicMock(stdout="12345678\n")
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         manager.submit_run(run)
@@ -251,7 +251,7 @@ class TestJobManagerSubmit:
         assert mkdir_idx < submit_idx
         assert calls[mkdir_idx].args[1] == [
             "-p",
-            "/scratch/user/proj/.hpc/runs/test_run",
+            "/scratch/user/proj/.crewster/runs/test_run",
         ]
 
     def test_submit_run_includes_slurm_submit_options(self, mock_ssh_manager):
@@ -265,7 +265,7 @@ class TestJobManagerSubmit:
         )
         manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
         mock_ssh_manager.run_command.return_value = MagicMock(stdout="12345678\n")
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="python train.py", status="pending")
         manager.submit_run(run)
@@ -431,7 +431,7 @@ class TestJobManagerDetail:
 class TestJobManagerTemplate:
     def test_render_job_script(self, mock_ssh_manager, sample_config):
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="python train.py", status="pending")
         script = manager._render_job_script(run)
@@ -446,7 +446,7 @@ class TestJobManagerTemplate:
     def test_render_job_script_default_cwd(self, mock_ssh_manager, sample_config):
         """Default cwd_relative=Path('.') uses workdir as job working directory"""
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         script = manager._render_job_script(run)
@@ -455,19 +455,19 @@ class TestJobManagerTemplate:
     def test_render_job_script_with_subdirectory(self, mock_ssh_manager, sample_config):
         """cwd_relative appends subdirectory to workdir for job cd"""
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         script = manager._render_job_script(run, cwd_relative=Path("runs/bench1"))
         assert 'cd "/scratch/user/proj/runs/bench1"' in script
         # Output paths still use base workdir
-        assert "--output=/scratch/user/proj/.hpc/runs/test_run" in script
+        assert "--output=/scratch/user/proj/.crewster/runs/test_run" in script
 
     def test_render_job_script_quotes_workdir(self, mock_ssh_manager, sample_config):
         """The `cd` line is double-quoted so `;` / whitespace in a workdir stay
         inert while `${USER}`-style expansion is preserved."""
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         script = manager._render_job_script(run)
@@ -480,7 +480,7 @@ class TestJobManagerTemplate:
         """A maliciously-named local subdir must not escape the quoted `cd`;
         the render choke point validates the combined job_workdir."""
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         with pytest.raises(ValueError, match="Unsafe characters"):
@@ -500,13 +500,13 @@ class TestJobManagerTemplate:
             pjm=PjmConfig(options=[["-L", "node=12"]]),
         )
         manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="echo hi", status="pending")
         script = manager._render_job_script(run)
 
-        assert "#PJM -o /scratch/user/proj/.hpc/runs/test_run/job.out" in script
-        assert "#PJM -e /scratch/user/proj/.hpc/runs/test_run/job.err" in script
+        assert "#PJM -o /scratch/user/proj/.crewster/runs/test_run/job.out" in script
+        assert "#PJM -e /scratch/user/proj/.crewster/runs/test_run/job.err" in script
         # Disconfirming: the Slurm-shaped forms (the original bug) must
         # not leak into a PJM-rendered script.
         assert "--output=" not in script
@@ -534,7 +534,9 @@ class TestJobManagerGetJobOutput:
         assert out == "hello\n"
         call_args = mock_ssh_manager.run_command.call_args
         assert call_args.args[0] == "cat"
-        assert call_args.args[1] == ["/scratch/user/proj/.hpc/runs/test_run/job.out"]
+        assert call_args.args[1] == [
+            "/scratch/user/proj/.crewster/runs/test_run/job.out"
+        ]
 
     def test_pjm_error_flag_uses_err_extension(self, mock_ssh_manager):
         config = HpcConfig(
@@ -550,7 +552,9 @@ class TestJobManagerGetJobOutput:
         manager.get_job_output("test_run", "12345678", error=True)
 
         call_args = mock_ssh_manager.run_command.call_args
-        assert call_args.args[1] == ["/scratch/user/proj/.hpc/runs/test_run/job.err"]
+        assert call_args.args[1] == [
+            "/scratch/user/proj/.crewster/runs/test_run/job.err"
+        ]
 
     def test_inner_scheduler_error_does_not_mask_original_no_such_file(
         self, mock_ssh_manager, sample_config
@@ -564,7 +568,7 @@ class TestJobManagerGetJobOutput:
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
         mock_ssh_manager.run_command.side_effect = [
             SSHError(
-                "SSH command failed (exit 1): cat /scratch/user/proj/.hpc/runs/test_run/job-12345678.out\n"
+                "SSH command failed (exit 1): cat /scratch/user/proj/.crewster/runs/test_run/job-12345678.out\n"
                 "stderr:\ncat: No such file or directory"
             ),
             MagicMock(stdout=""),  # status probe; parse_status raises SchedulerError
@@ -593,7 +597,7 @@ class TestJobManagerTailJobOutput:
         assert rc == 0
         mock_ssh_manager.run_streaming.assert_called_once_with(
             "tail",
-            ["-F", "/scratch/user/proj/.hpc/runs/run_id/job-12345678.out"],
+            ["-F", "/scratch/user/proj/.crewster/runs/run_id/job-12345678.out"],
         )
 
     def test_tail_job_output_terminal_falls_back_to_get_job_output(
@@ -639,7 +643,7 @@ class TestJobManagerTailJobOutput:
         assert call_args.args[0] == "tail"
         assert call_args.args[1] == [
             "-F",
-            "/scratch/user/proj/.hpc/runs/run_id/job-12345678.err",
+            "/scratch/user/proj/.crewster/runs/run_id/job-12345678.err",
         ]
 
     def test_tail_job_output_returns_streaming_exit_code(
@@ -675,7 +679,7 @@ class TestJobManagerTailJobOutput:
         assert rc == 0
         mock_ssh_manager.run_streaming.assert_called_once_with(
             "tail",
-            ["-F", "/scratch/user/proj/.hpc/runs/test_run/job.out"],
+            ["-F", "/scratch/user/proj/.crewster/runs/test_run/job.out"],
         )
 
 
@@ -808,7 +812,7 @@ class TestJobManagerHoistsUserDirectives:
         self, mock_ssh_manager, sample_config
     ):
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         cmd = "#!/bin/bash\n#SBATCH --array=1-10%5\necho hi\n"
         run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
@@ -819,8 +823,8 @@ class TestJobManagerHoistsUserDirectives:
         cd_idx = script.index('cd "/scratch/user/proj"')
         assert array_idx < cd_idx
         # And before the template's hardcoded --output= bookkeeping line, so
-        # hpc's run-tracking output path always wins over any user override.
-        output_idx = script.index("--output=/scratch/user/proj/.hpc/runs/test_run")
+        # crewster's run-tracking output path always wins over any user override.
+        output_idx = script.index("--output=/scratch/user/proj/.crewster/runs/test_run")
         assert array_idx < output_idx
         # User shebang is stripped (template emits its own).
         assert script.count("#!/bin/bash") == 1
@@ -836,7 +840,7 @@ class TestJobManagerHoistsUserDirectives:
             pjm=PjmConfig(options=[["-L", "node=12"]]),
         )
         manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         cmd = '#!/bin/bash\n#PJM -L "rscgrp=small"\n#PJM -j\n#PJM -N myjob\necho pjm\n'
         run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
@@ -858,7 +862,7 @@ class TestJobManagerHoistsUserDirectives:
     ):
         """User directive wins on conflict via scheduler last-occurrence-wins."""
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         cmd = "#!/bin/bash\n#SBATCH --partition=cpu\necho hi\n"
         run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
@@ -877,7 +881,7 @@ class TestJobManagerHoistsUserDirectives:
             pjm=PjmConfig(options=[["-L", "node=12"]]),
         )
         manager = JobManager(ssh_manager=mock_ssh_manager, config=config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         cmd = '#!/bin/bash\n#PJM -L "node=4"\necho pjm\n'
         run = RunConfig(run_id="test_run", cmd=cmd, status="pending")
@@ -891,7 +895,7 @@ class TestJobManagerHoistsUserDirectives:
         """Plain command without directives: rendered output matches the
         pre-hoist behavior — user_directives block emits nothing extra."""
         manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
-        from hpc.run import RunConfig
+        from crewster.run import RunConfig
 
         run = RunConfig(run_id="test_run", cmd="python train.py", status="pending")
         script = manager._render_job_script(run)

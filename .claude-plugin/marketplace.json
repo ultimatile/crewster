@@ -1,5 +1,5 @@
 {
-  "name": "hpc",
+  "name": "crewster",
   "owner": {
     "name": "ultimatile"
   },
@@ -9,12 +9,12 @@
   },
   "plugins": [
     {
-      "name": "hpc",
+      "name": "crewster",
       "description": "HPC cluster workflow automation - sync, submit, and monitor jobs on remote clusters",
       "source": "./",
       "strict": false,
       "skills": [
-        "./.claude/skills/hpc"
+        "./.claude/skills/crewster"
       ]
     }
   ]
