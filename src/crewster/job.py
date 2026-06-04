@@ -56,7 +56,7 @@ def _extract_prologue_directives(content: str, prefix: str) -> tuple[list[str], 
     comments and whitespace-only lines as scan-terminating — rather
     than as bash-style blanks/comments — is intentional: the schedulers
     themselves are column-sensitive, so being any more permissive would
-    cause ``hpc submit -s script.sh`` to honor directives that
+    cause ``crewster submit -s script.sh`` to honor directives that
     ``sbatch script.sh`` standalone would have ignored.
 
     Directive lines are matched at column zero with ``^<prefix>\\b`` and
@@ -160,7 +160,7 @@ class JobManager:
         # ClusterConfig field validator alone would miss the override (assigned
         # directly onto the model) and the cwd_relative component.
         _validate_dq_shell_value(job_workdir, label="job workdir")
-        run_dir = f"{workdir}/.hpc/runs/{run.run_id}"
+        run_dir = f"{workdir}/.crewster/runs/{run.run_id}"
         options = (
             self.config.pjm.options
             if self.config.cluster.scheduler == "pjm"
@@ -187,7 +187,7 @@ class JobManager:
         script = self._render_job_script(run, cwd_relative=cwd_relative)
 
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
-        run_dir = f"{workdir}/.hpc/runs/{run.run_id}"
+        run_dir = f"{workdir}/.crewster/runs/{run.run_id}"
         self.ssh_manager.run_command("mkdir", ["-p", run_dir])
 
         script_path = f"{run_dir}/job.sh"
@@ -214,7 +214,7 @@ class JobManager:
         # rendered into `cd "<workdir>"`. This legacy path has no cwd_relative
         # component, so the resolved workdir is the full job working directory.
         _validate_dq_shell_value(workdir, label="job workdir")
-        run_dir = f"{workdir}/.hpc/runs/job"
+        run_dir = f"{workdir}/.crewster/runs/job"
         options = (
             self.config.pjm.options
             if self.config.cluster.scheduler == "pjm"
@@ -309,7 +309,7 @@ class JobManager:
         from .ssh import SSHError
 
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
-        run_dir = f"{workdir}/.hpc/runs/{run_id}"
+        run_dir = f"{workdir}/.crewster/runs/{run_id}"
         output_path = self.scheduler.output_path(run_dir, job_id, error=error)
 
         try:
@@ -353,7 +353,7 @@ class JobManager:
             return 0
 
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
-        run_dir = f"{workdir}/.hpc/runs/{run_id}"
+        run_dir = f"{workdir}/.crewster/runs/{run_id}"
         output_path = self.scheduler.output_path(run_dir, job_id, error=error)
         return self.ssh_manager.run_streaming("tail", ["-F", output_path])
 

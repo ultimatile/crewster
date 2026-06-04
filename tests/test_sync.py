@@ -4,16 +4,16 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hpc.sync import SyncManager, SyncResult
-from hpc.ssh import SSHManager
-from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, SyncConfig
+from crewster.sync import SyncManager, SyncResult
+from crewster.ssh import SSHManager
+from crewster.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, SyncConfig
 
 
 @pytest.fixture
 def mock_ssh_manager():
     mock = MagicMock(spec=SSHManager)
     mock.use_control_master = True
-    mock._control_path = "/tmp/hpc_ssh_myhpc_99999"
+    mock._control_path = "/tmp/crewster_ssh_myhpc_99999"
     return mock
 
 
@@ -93,7 +93,7 @@ class TestBuildRsyncControlMaster:
         self, mock_ssh_manager, sample_config, temp_dir
     ):
         mock_ssh_manager.use_control_master = True
-        mock_ssh_manager._control_path = "/tmp/hpc_ssh_myhpc_12345"
+        mock_ssh_manager._control_path = "/tmp/crewster_ssh_myhpc_12345"
         manager = SyncManager(ssh_manager=mock_ssh_manager, config=sample_config)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -102,7 +102,7 @@ class TestBuildRsyncControlMaster:
             e_index = call_args.index("-e")
             ssh_opts = call_args[e_index + 1]
             assert "ControlMaster=auto" in ssh_opts
-            assert "ControlPath=/tmp/hpc_ssh_myhpc_12345" in ssh_opts
+            assert "ControlPath=/tmp/crewster_ssh_myhpc_12345" in ssh_opts
             assert "ControlPersist=10m" in ssh_opts
 
     def test_rsync_excludes_control_master_when_disabled(

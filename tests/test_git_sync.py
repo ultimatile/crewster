@@ -5,9 +5,9 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hpc.sync import SyncManager
-from hpc.ssh import SSHManager
-from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig
+from crewster.sync import SyncManager
+from crewster.ssh import SSHManager
+from crewster.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ class TestGitStatus:
     def test_get_git_commit(self, mock_ssh_manager, sample_config):
         manager = SyncManager(ssh_manager=mock_ssh_manager, config=sample_config)
         with (
-            patch("hpc.sync.subprocess.run") as mock_run,
+            patch("crewster.sync.subprocess.run") as mock_run,
             patch.object(Path, "exists", return_value=True),
         ):
             mock_run.return_value = MagicMock(
@@ -42,7 +42,7 @@ class TestGitStatus:
     def test_get_git_commit_short(self, mock_ssh_manager, sample_config):
         manager = SyncManager(ssh_manager=mock_ssh_manager, config=sample_config)
         with (
-            patch("hpc.sync.subprocess.run") as mock_run,
+            patch("crewster.sync.subprocess.run") as mock_run,
             patch.object(Path, "exists", return_value=True),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc1234\n")
@@ -52,7 +52,7 @@ class TestGitStatus:
     def test_has_uncommitted_changes_clean(self, mock_ssh_manager, sample_config):
         manager = SyncManager(ssh_manager=mock_ssh_manager, config=sample_config)
         with (
-            patch("hpc.sync.subprocess.run") as mock_run,
+            patch("crewster.sync.subprocess.run") as mock_run,
             patch.object(Path, "exists", return_value=True),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="")
@@ -61,7 +61,7 @@ class TestGitStatus:
     def test_has_uncommitted_changes_dirty(self, mock_ssh_manager, sample_config):
         manager = SyncManager(ssh_manager=mock_ssh_manager, config=sample_config)
         with (
-            patch("hpc.sync.subprocess.run") as mock_run,
+            patch("crewster.sync.subprocess.run") as mock_run,
             patch.object(Path, "exists", return_value=True),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout=" M test.py\n")

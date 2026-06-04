@@ -1,26 +1,26 @@
-# hpc
+# crewster
 
 A CLI that makes a remote HPC cluster feel local — sync your working tree, run a quick job (Slurm/PJM), pull results.
 
 ## Why not Snakemake?
 
-hpc is **not** a job orchestrator, and does not try to be one.
+crewster is **not** a job orchestrator, and does not try to be one.
 
 Its responsibility is the inner development loop against a remote environment: you are actively editing code — often *before it is committed* — and you want to push the current working tree to a remote HPC environment and run a quick test there, repeatedly and quickly. [Snakemake](https://github.com/snakemake/snakemake), [Nextflow](https://github.com/nextflow-io/nextflow), and similar tools assume a defined, committed pipeline and manage its execution graph; they serve the *other* end of the lifecycle.
 
 They are complementary, not competing:
 
-- **hpc** — frequent pre-commit source sync, single test / verification runs, a tight edit → run → observe loop. Built for a coding agent iterating against a remote environment.
+- **crewster** — frequent pre-commit source sync, single test / verification runs, a tight edit → run → observe loop. Built for a coding agent iterating against a remote environment.
 - **A workflow runner** — dependency graphs, multi-step pipelines, retries, production runs.
 
-If you need to orchestrate a complex production run, use a real orchestrator — and you can still launch it *through* hpc (`hpc submit "snakemake ..."`): hpc handles the transport (sync up, run, pull results) and treats the workflow as opaque user code. hpc owns the transport and the dev loop, never the run graph.
+If you need to orchestrate a complex production run, use a real orchestrator — and you can still launch it *through* crewster (`crewster submit "snakemake ..."`): crewster handles the transport (sync up, run, pull results) and treats the workflow as opaque user code. crewster owns the transport and the dev loop, never the run graph.
 
 ## Installation
 
 One-shot execution (no install):
 
 ```bash
-uvx --from git+https://github.com/ultimatile/hpc hpc
+uvx --from git+https://github.com/ultimatile/hpc crewster
 ```
 
 Permanent install:
@@ -33,101 +33,101 @@ uv tool install git+https://github.com/ultimatile/hpc
 
 ```bash
 # 1. Initialize project
-hpc init
+crewster init
 
 # 2. Edit configuration
-vim hpc.toml
+vim crewster.toml
 
 # 3. Sync files to cluster
-hpc sync
-hpc sync --dry-run  # preview only
+crewster sync
+crewster sync --dry-run  # preview only
 
 # 4. Submit job
-hpc submit "python train.py"
+crewster submit "python train.py"
 
 # 5. Check status
-hpc status 12345678
+crewster status 12345678
 
 # 6. View job output
-hpc job-output 12345678
+crewster job-output 12345678
 ```
 
 ## Commands
 
-### `hpc init`
+### `crewster init`
 
-Creates `hpc.toml` configuration file in the current directory.
+Creates `crewster.toml` configuration file in the current directory.
 
 ```bash
-hpc init                      # Slurm template (default)
-hpc init --scheduler pjm      # PJM-oriented template
+crewster init                      # Slurm template (default)
+crewster init --scheduler pjm      # PJM-oriented template
 ```
 
 `--scheduler` selects which scheduler-specific section is written. The default is `slurm`.
 
-When `$XDG_CONFIG_HOME/hpc/config.toml` exists, it is used as the source instead of the built-in template. See [User-level XDG config](#user-level-xdg-config) for the filter-merge semantics.
+When `$XDG_CONFIG_HOME/crewster/config.toml` exists, it is used as the source instead of the built-in template. See [User-level XDG config](#user-level-xdg-config) for the filter-merge semantics.
 
-### `hpc sync`
+### `crewster sync`
 
 Syncs local files to the remote HPC cluster using rsync.
-Always syncs the entire project root (where `hpc.toml` is located), regardless of which subdirectory you run from.
+Always syncs the entire project root (where `crewster.toml` is located), regardless of which subdirectory you run from.
 
 ```bash
-hpc sync                # sync files
-hpc sync --dry-run      # preview without syncing (-n for short)
-hpc sync --workdir /scratch/user/other   # override remote workdir
-hpc sync --push         # push only (local → remote)
-hpc sync --pull         # pull only (remote → local)
+crewster sync                # sync files
+crewster sync --dry-run      # preview without syncing (-n for short)
+crewster sync --workdir /scratch/user/other   # override remote workdir
+crewster sync --push         # push only (local → remote)
+crewster sync --pull         # pull only (remote → local)
 ```
 
-### `hpc exec`
+### `crewster exec`
 
 Executes a command directly on the login node (not via scheduler). Useful for setup tasks that need internet access (package installs, dependency downloads).
 
 ```bash
-hpc exec "julia -e 'using Pkg; Pkg.instantiate()'"
-hpc exec --script setup.sh
-hpc exec --workdir /scratch/user/other "cmake .."
+crewster exec "julia -e 'using Pkg; Pkg.instantiate()'"
+crewster exec --script setup.sh
+crewster exec --workdir /scratch/user/other "cmake .."
 ```
 
-Environment setup (`[env]` section) is applied automatically. The working directory follows the same CWD-relative logic as `hpc submit`.
+Environment setup (`[env]` section) is applied automatically. The working directory follows the same CWD-relative logic as `crewster submit`.
 
-### `hpc submit`
+### `crewster submit`
 
 Submits a job to the configured scheduler.
-Returns both run_id (e.g., `20260109_1234`, hpc's local tracking ID) and job_id (scheduler job ID, e.g., `12345678`).
+Returns both run_id (e.g., `20260109_1234`, crewster's local tracking ID) and job_id (scheduler job ID, e.g., `12345678`).
 
 The job's working directory is set based on your current position relative to the project root (see [Multi-Setup Runs](#multi-setup-runs)).
 
 ```bash
-hpc submit "python train.py"
-hpc submit --script run.sh
-hpc submit -s run.sh --wait
-hpc submit --workdir /scratch/user/other "python train.py"  # override remote workdir
+crewster submit "python train.py"
+crewster submit --script run.sh
+crewster submit -s run.sh --wait
+crewster submit --workdir /scratch/user/other "python train.py"  # override remote workdir
 ```
 
-`#SBATCH` (Slurm) and `#PJM` (PJM) directives written at the top of a script passed via `--script` are honored: hpc hoists them into the prologue of the rendered job script, so they are scanned by `sbatch` / `pjsub` instead of being silently treated as comments.
+`#SBATCH` (Slurm) and `#PJM` (PJM) directives written at the top of a script passed via `--script` are honored: crewster hoists them into the prologue of the rendered job script, so they are scanned by `sbatch` / `pjsub` instead of being silently treated as comments.
 
 Only column-zero directive lines that appear before the first executable line in the user script are hoisted, matching the schedulers' own prologue-scan rule. Directives after an executable line, or inside heredocs, are left in the body as-is.
 
 When the same option is set both via config (`[slurm.options]` for Slurm, the `pjm.options` array for PJM) and via a `#SBATCH` / `#PJM` line in the script, the script's value wins (the scheduler's last-occurrence-wins semantics for duplicate directives). The `submit_options` list is passed as command-line flags to `sbatch` / `pjsub` and, per scheduler specifications, overrides script directives unconditionally.
 
-### `hpc status`
+### `crewster status`
 
 Checks the status of a submitted job.
 Accepts either run_id or job_id.
 
 ```bash
-hpc status 12345678
+crewster status 12345678
 ```
 
-### `hpc job-output`
+### `crewster job-output`
 
 Shows the output of a submitted job.
 Accepts either run_id or job_id.
 
 ```bash
-hpc job-output 12345678
+crewster job-output 12345678
 ```
 
 Pass `--follow` / `-f` to stream the output of a running job in real time
@@ -136,40 +136,42 @@ Pass `--follow` / `-f` to stream the output of a running job in real time
 prints the final output and exits.
 
 ```bash
-hpc job-output -f 12345678
-hpc job-output -f -e 12345678
+crewster job-output -f 12345678
+crewster job-output -f -e 12345678
 ```
 
-### `hpc wait`
+### `crewster wait`
 
 Waits for a run to complete.
 Accepts either run_id or job_id.
 
 ```bash
-hpc wait 12345678
+crewster wait 12345678
 ```
 
 ## Project Root and Config Discovery
 
-hpc walks up from the current directory to find `hpc.toml`, similar to how git finds `.git`. This means you can run hpc commands from any subdirectory within your project.
+crewster walks up from the current directory to find `crewster.toml`, similar to how git finds `.git`. This means you can run crewster commands from any subdirectory within your project.
 
-Resolution order: `--config` / `-c` > `$HPC_CONFIG` > walk-up discovery > `./hpc.toml`.
+Resolution order: `--config` / `-c` > `$CREWSTER_CONFIG` > walk-up discovery > `./crewster.toml`.
 
-The directory containing `hpc.toml` is the **project root**. This affects:
+For backward compatibility, the legacy `$HPC_CONFIG` environment variable and a `hpc.toml` filename are still honored as a read-only fallback, with a deprecation warning printed to stderr. This fallback is removed in v1.0. If you keep a legacy `hpc.toml`, add `.crewster` to `[sync] ignore_push` so the run-metadata directory is not pushed to the remote.
 
-- **`hpc sync`**: always syncs the entire project root to `workdir`, regardless of CWD
-- **`hpc submit`**: sets the job's `cd` to `workdir` + (CWD relative to project root)
-- **`.hpc/runs/`**: run metadata is always stored at the project root
+The directory containing `crewster.toml` is the **project root**. This affects:
 
-`hpc init` does not walk up — it always creates `hpc.toml` in the current directory.
+- **`crewster sync`**: always syncs the entire project root to `workdir`, regardless of CWD
+- **`crewster submit`**: sets the job's `cd` to `workdir` + (CWD relative to project root)
+- **`.crewster/runs/`**: run metadata is always stored at the project root
+
+`crewster init` does not walk up — it always creates `crewster.toml` in the current directory.
 
 ## Multi-Setup Runs
 
-When running multiple benchmarks or parameter sets from a single project, use subdirectories. hpc automatically maps your local directory structure to the remote.
+When running multiple benchmarks or parameter sets from a single project, use subdirectories. crewster automatically maps your local directory structure to the remote.
 
 ```
 myproject/
-  hpc.toml              # workdir = "/remote/myproject"
+  crewster.toml         # workdir = "/remote/myproject"
   src/main.py
   runs/
     setup-a/
@@ -180,15 +182,15 @@ myproject/
 
 ```bash
 # Sync the entire project (same result from any subdirectory)
-hpc sync
+crewster sync
 
 # Submit from a subdirectory — job runs in the matching remote path
 cd runs/setup-a
-hpc submit "python src/main.py"
+crewster submit "python src/main.py"
 # → job cd's to /remote/myproject/runs/setup-a
 
 cd ../setup-b
-hpc submit "python src/main.py"
+crewster submit "python src/main.py"
 # → job cd's to /remote/myproject/runs/setup-b
 ```
 
@@ -196,12 +198,12 @@ Key points:
 
 - **sync** is always project-wide. The remote mirrors your local project structure exactly.
 - **submit** uses your CWD to determine the job's working directory on the remote.
-- **`--workdir`** overrides `cluster.workdir` for one-off use without editing `hpc.toml`.
+- **`--workdir`** overrides `cluster.workdir` for one-off use without editing `crewster.toml`.
 - Large artifacts that shouldn't be synced are managed via `[sync] ignore`.
 
 ## Configuration
 
-Edit `hpc.toml`:
+Edit `crewster.toml`:
 
 ```toml
 [cluster]
@@ -219,7 +221,7 @@ setup = [                              # Additional setup commands
 ]
 
 [sync]
-ignore = ["hpc.toml", ".git"]  # Patterns to exclude from sync
+ignore = ["crewster.toml", ".git"]  # Patterns to exclude from sync
 compare = "checksum"           # File comparison: "checksum" (content-based, default) or "timestamp"
 pull_dir = "~/data/myproj"     # Pull destination (default: project root). Useful for keeping git repo clean
 
@@ -279,13 +281,13 @@ options = [
 
 ### User-level XDG config
 
-`$XDG_CONFIG_HOME/hpc/config.toml` (default: `~/.config/hpc/config.toml`), when present, is used as the source for `hpc init` instead of the built-in template. The file is filter-merged onto the chosen scheduler:
+`$XDG_CONFIG_HOME/crewster/config.toml` (default: `~/.config/crewster/config.toml`), when present, is used as the source for `crewster init` instead of the built-in template. The file is filter-merged onto the chosen scheduler:
 
 - The inactive scheduler's top-level section (`[pjm]` under `--scheduler slurm`, `[slurm]` under `--scheduler pjm`) is dropped.
 - `cluster.scheduler` is forced to match the `--scheduler` argument.
 - All other sections (including unknown ones) carry over with their parsed TOML values intact.
 
-The source XDG file is not modified. This lets the XDG file carry both `[slurm]` and `[pjm]` sections side by side so that `hpc init --scheduler {slurm,pjm}` projects out the active half. Because the file goes through `tomllib.load` and `tomli_w.dump`, comments and original formatting (e.g. inline-array layout) are not preserved in the generated `hpc.toml`; only the parsed data is.
+The source XDG file is not modified. This lets the XDG file carry both `[slurm]` and `[pjm]` sections side by side so that `crewster init --scheduler {slurm,pjm}` projects out the active half. Because the file goes through `tomllib.load` and `tomli_w.dump`, comments and original formatting (e.g. inline-array layout) are not preserved in the generated `crewster.toml`; only the parsed data is.
 
 ## Requirements
 
@@ -306,7 +308,7 @@ brew install rsync
 
 ## Claude Code Integration
 
-This project includes a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) (`.claude/skills/hpc/SKILL.md`) that teaches Claude how to use the hpc CLI. The CLI reference in the skill is dynamically generated via `hpc --skill` to stay in sync with the code.
+This project includes a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) (`.claude/skills/crewster/SKILL.md`) that teaches Claude how to use the crewster CLI. The CLI reference in the skill is dynamically generated via `crewster --skill` to stay in sync with the code.
 
 ## Development
 

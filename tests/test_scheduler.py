@@ -2,8 +2,8 @@
 
 import pytest
 
-from hpc.scheduler import PJM, JobDetail, JobStatus, SchedulerError, Slurm
-from hpc.ssh import SSHError
+from crewster.scheduler import PJM, JobDetail, JobStatus, SchedulerError, Slurm
+from crewster.ssh import SSHError
 
 
 class TestSlurmStatusCmd:

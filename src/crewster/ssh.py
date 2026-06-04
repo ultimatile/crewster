@@ -38,7 +38,7 @@ class SSHManager:
         self.host = host
         self.user = user
         self.use_control_master = use_control_master
-        self._control_path = f"/tmp/hpc_ssh_{host}_{os.getpid()}"
+        self._control_path = f"/tmp/crewster_ssh_{host}_{os.getpid()}"
 
     def _validate_target_component(self, label: str, value: str) -> None:
         """Reject values that could be treated as ssh options"""

@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hpc.run import RunManager, RunConfig
-from hpc.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig
+from crewster.run import RunManager, RunConfig
+from crewster.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ class TestRunManagerCreateRun:
 
     def test_create_run_id_format(self, sample_config, temp_dir):
         manager = RunManager(config=sample_config, runs_dir=temp_dir)
-        with patch("hpc.run.datetime") as mock_dt:
+        with patch("crewster.run.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2025, 12, 26, 18, 30, 12)
             run = manager.create_run("python train.py")
             assert run.run_id.startswith("2025-12-26_183012_")

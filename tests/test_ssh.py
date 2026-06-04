@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hpc.ssh import SSHManager, SSHError
+from crewster.ssh import SSHManager, SSHError
 
 
 class TestSSHManagerInit:
