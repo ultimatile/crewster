@@ -2,6 +2,7 @@
 
 import pytest
 from pathlib import Path
+from pydantic import ValidationError
 
 from crewster.config import (
     ClusterConfig,
@@ -70,76 +71,189 @@ class TestEnvConfig:
         config = EnvConfig(setup=[{"module": "gcc/12.2.0"}, {"spack": "cuda@12"}])
         assert len(config.setup) == 2
 
-    def test_env_config_with_string_command(self):
-        config = EnvConfig(setup=["my_setup"])
-        assert config.setup == ["my_setup"]
-
     def test_env_config_defaults(self):
         config = EnvConfig()
         assert config.setup == []
 
-    def test_env_config_rejects_shell_special(self):
-        config = EnvConfig(setup=[{"module": "gcc; rm -rf ~"}])
-        with pytest.raises(Exception):
+    def test_module_and_spack_render_load_commands(self):
+        config = EnvConfig(setup=[{"module": "gcc/12.2.0"}, {"spack": "cuda@12"}])
+        assert config.get_setup_commands() == [
+            "module load gcc/12.2.0",
+            "spack load cuda@12",
+        ]
+
+    def test_setup_preserves_list_order(self):
+        # The single ordered list is the one place execution order is declared;
+        # commands must render in exactly the authored order.
+        config = EnvConfig(
+            setup=[
+                {"export": {"SPACK_ROOT": "/opt/spack"}},
+                {"source": ["/opt/spack/share/spack/setup-env.sh"]},
+                {"spack": "boost@1.86.0"},
+                {"module": "gcc/12.2.0"},
+            ]
+        )
+        assert config.get_setup_commands() == [
+            'export SPACK_ROOT="/opt/spack"',
+            "source /opt/spack/share/spack/setup-env.sh",
+            "spack load boost@1.86.0",
+            "module load gcc/12.2.0",
+        ]
+
+    def test_spack_spec_allows_spaces(self):
+        # A spack spec is one logical unit that legitimately contains spaces
+        # (version + variant + arch). It renders to a single quoted shell word,
+        # which spack parses back into one spec.
+        config = EnvConfig(
+            setup=[{"spack": "boost@1.86.0 ~mpi arch=linux-rhel8-a64fx"}]
+        )
+        assert config.get_setup_commands() == [
+            "spack load 'boost@1.86.0 ~mpi arch=linux-rhel8-a64fx'"
+        ]
+
+    def test_module_spec_allows_spaces(self):
+        config = EnvConfig(setup=[{"module": "gcc 12.2.0"}])
+        assert config.get_setup_commands() == ["module load 'gcc 12.2.0'"]
+
+    def test_spack_still_rejects_dangerous_metacharacters(self):
+        # The space relaxation must not relax the genuinely dangerous chars.
+        config = EnvConfig(setup=[{"spack": "boost; rm -rf ~"}])
+        with pytest.raises(ValueError, match="Shell special characters"):
             config.get_setup_commands()
 
-    def test_exports_generates_export_commands(self):
+    def test_generic_command_is_safe_escape_hatch(self):
+        config = EnvConfig(setup=[{"ulimit": ["-s", "unlimited"]}])
+        assert config.get_setup_commands() == ["ulimit -s unlimited"]
+
+    def test_generic_command_no_args(self):
+        config = EnvConfig(setup=[{"nvidia-smi": []}])
+        assert config.get_setup_commands() == ["nvidia-smi"]
+
+    @pytest.mark.parametrize("cmd", ["module", "spack"])
+    def test_module_spack_empty_list_requires_spec(self, cmd):
+        # An empty list would emit a bare `load` that errors remotely.
+        config = EnvConfig(setup=[{cmd: []}])
+        with pytest.raises(ValueError, match="requires a spec"):
+            config.get_setup_commands()
+
+    @pytest.mark.parametrize("cmd", ["module", "spack"])
+    @pytest.mark.parametrize("spec", ["", ["", "boost@1.86.0"]])
+    def test_module_spack_reject_empty_token(self, cmd, spec):
+        # An empty token is rejected rather than silently dropped, so it cannot
+        # render a partial command.
+        config = EnvConfig(setup=[{cmd: spec}])
+        with pytest.raises(ValueError, match="empty argument"):
+            config.get_setup_commands()
+
+    def test_generic_command_requires_list_not_string(self):
+        # A bare string is the single-spec form for module / spack only; a
+        # generic command must pass an explicit argument list.
+        config = EnvConfig(setup=[{"source": "/path/setup-env.sh"}])
+        with pytest.raises(ValueError, match="requires a list of arguments"):
+            config.get_setup_commands()
+
+    def test_generic_command_rejects_empty_token(self):
+        config = EnvConfig(setup=[{"ulimit": ["-s", ""]}])
+        with pytest.raises(ValueError, match="empty argument"):
+            config.get_setup_commands()
+
+    def test_generic_command_rejects_metacharacters(self):
+        # The escape hatch quotes each token, but still bans control operators
+        # so a shell metacharacter can never originate from config.
+        config = EnvConfig(setup=[{"ulimit": ["-s; rm -rf ~"]}])
+        with pytest.raises(ValueError, match="Shell special characters"):
+            config.get_setup_commands()
+
+    # --- export item ---------------------------------------------------------
+
+    def test_export_item_generates_export_commands(self):
         config = EnvConfig(
-            exports={"OMP_NUM_THREADS": "${SLURM_CPUS_PER_TASK}", "FOO": "bar"}
+            setup=[
+                {"export": {"OMP_NUM_THREADS": "${SLURM_CPUS_PER_TASK}", "FOO": "bar"}}
+            ]
         )
         cmds = config.get_setup_commands()
         assert 'export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"' in cmds
         assert 'export FOO="bar"' in cmds
 
-    def test_exports_rejects_command_substitution_dollar(self):
-        config = EnvConfig(exports={"FOO": "$(rm -rf /)"})
-        with pytest.raises(ValueError, match="Unsafe characters"):
-            config.get_setup_commands()
-
-    def test_exports_rejects_command_substitution_backtick(self):
-        config = EnvConfig(exports={"FOO": "`rm -rf /`"})
-        with pytest.raises(ValueError, match="Unsafe characters"):
-            config.get_setup_commands()
-
-    def test_exports_rejects_double_quote_breakout(self):
-        # The value is rendered inside `export KEY="<value>"`; a literal `"`
-        # closes the quote and turns the rest into commands. The pre-whitelist
-        # validator (which blocked only `$(` / backtick) let this through.
-        config = EnvConfig(exports={"FOO": 'x"; touch /tmp/pwned; echo "'})
-        with pytest.raises(ValueError, match="Unsafe characters"):
-            config.get_setup_commands()
-
-    def test_exports_rejects_prompt_expansion(self):
-        # `${VAR@P}` re-evaluates its value as a prompt string, performing
-        # command substitution assembled from otherwise-allowed values — a
-        # bypass no blocklist of `$(` / backtick can catch.
-        config = EnvConfig(exports={"FOO": "${BAR@P}"})
-        with pytest.raises(ValueError, match="Unsafe characters"):
-            config.get_setup_commands()
-
-    def test_exports_rejects_newline(self):
-        config = EnvConfig(exports={"FOO": "a\nb"})
-        with pytest.raises(ValueError, match="Unsafe characters"):
-            config.get_setup_commands()
-
-    def test_exports_rejects_nul(self):
-        config = EnvConfig(exports={"FOO": "a\x00b"})
-        with pytest.raises(ValueError, match="Unsafe characters"):
-            config.get_setup_commands()
-
-    def test_exports_allows_simple_variable_references(self):
+    def test_export_allows_simple_variable_references(self):
         # Simple `$VAR` / `${VAR}` parameter references must survive — they are
         # the intended remote-expansion use case.
         config = EnvConfig(
-            exports={"HOME_REF": "$HOME", "NESTED": "/scratch/${USER}/out"}
+            setup=[{"export": {"HOME_REF": "$HOME", "NESTED": "/scratch/${USER}/out"}}]
         )
         cmds = config.get_setup_commands()
         assert 'export HOME_REF="$HOME"' in cmds
         assert 'export NESTED="/scratch/${USER}/out"' in cmds
 
-    def test_exports_rejects_invalid_key(self):
-        config = EnvConfig(exports={"FOO;BAR": "value"})
-        with pytest.raises(ValueError):
+    def test_export_rejects_command_substitution_dollar(self):
+        config = EnvConfig(setup=[{"export": {"FOO": "$(rm -rf /)"}}])
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_export_rejects_command_substitution_backtick(self):
+        config = EnvConfig(setup=[{"export": {"FOO": "`rm -rf /`"}}])
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_export_rejects_double_quote_breakout(self):
+        # The value is rendered inside `export KEY="<value>"`; a literal `"`
+        # closes the quote and turns the rest into commands.
+        config = EnvConfig(setup=[{"export": {"FOO": 'x"; touch /tmp/pwned; echo "'}}])
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_export_rejects_prompt_expansion(self):
+        # `${VAR@P}` re-evaluates its value as a prompt string, performing
+        # command substitution assembled from otherwise-allowed values.
+        config = EnvConfig(setup=[{"export": {"FOO": "${BAR@P}"}}])
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_export_rejects_newline(self):
+        config = EnvConfig(setup=[{"export": {"FOO": "a\nb"}}])
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    def test_export_rejects_nul(self):
+        config = EnvConfig(setup=[{"export": {"FOO": "a\x00b"}}])
+        with pytest.raises(ValueError, match="Unsafe characters"):
+            config.get_setup_commands()
+
+    @pytest.mark.parametrize("key", ["FOO;BAR", "123FOO", "FOO-BAR", "FOO BAR", ""])
+    def test_export_rejects_invalid_key(self, key):
+        # An export name that is not a valid shell identifier would emit an
+        # `export` the remote shell rejects, so reject it at config time.
+        config = EnvConfig(setup=[{"export": {key: "value"}}])
+        with pytest.raises(ValueError, match="Invalid environment variable name"):
+            config.get_setup_commands()
+
+    # --- clean-break rejections ---------------------------------------------
+
+    @pytest.mark.parametrize("field", ["modules", "spack", "exports"])
+    def test_old_bucket_keys_rejected(self, field):
+        # The removed top-level buckets must fail loudly (extra="forbid"),
+        # not be silently dropped into an empty environment.
+        with pytest.raises(ValidationError):
+            EnvConfig(**{field: ["gcc/12.2.0"]})
+
+    def test_bare_string_item_rejected(self):
+        with pytest.raises(ValidationError):
+            EnvConfig(setup=["my_setup"])
+
+    def test_multi_key_item_rejected(self):
+        config = EnvConfig(setup=[{"module": "gcc", "spack": "cuda"}])
+        with pytest.raises(ValueError, match="exactly one command key"):
+            config.get_setup_commands()
+
+    def test_table_value_rejected_for_non_export(self):
+        config = EnvConfig(setup=[{"module": {"foo": "bar"}}])
+        with pytest.raises(ValueError, match="only allowed for 'export'"):
+            config.get_setup_commands()
+
+    def test_export_requires_table_value(self):
+        config = EnvConfig(setup=[{"export": ["FOO=bar"]}])
+        with pytest.raises(ValueError, match="requires a table"):
             config.get_setup_commands()
 
 

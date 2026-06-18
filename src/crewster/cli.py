@@ -129,7 +129,7 @@ def _apply_xdg_with_filter(src: Path, dst: Path, scheduler: SchedulerChoice) -> 
     active value. The source file itself is not modified.
 
     The destination inherits the source's permission bits so a restrictive
-    XDG mode (e.g. ``0o600`` for a file carrying ``env.exports`` secrets) is
+    XDG mode (e.g. ``0o600`` for a file carrying ``env`` export secrets) is
     not silently relaxed to the umask default — the previous ``shutil.copy``
     path preserved mode bits, and the rewrite must too.
     """
