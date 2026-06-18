@@ -8,16 +8,26 @@ from pathlib import Path
 from typing import Literal
 
 import tomli_w
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
-# str: command without args, dict: {cmd: args}
-SetupItem = str | dict[str, str | list[str]]
+# A setup item is a single-key table ``{command: args}``. ``args`` is a string
+# or list of arguments, except for ``export`` whose args is a ``{KEY: value}``
+# table. Bare strings are intentionally excluded: a raw, unvalidated command is
+# arbitrary code execution, so arbitrary shell logic must go through a remote
+# script invoked via ``{source = ["script.sh"]}`` instead.
+SetupItem = dict[str, str | list[str] | dict[str, str]]
 
 SHELL_SPECIAL = set(";|&`$<>\\'\"\n ")
 
 
-def _validate_arg(arg: str) -> None:
-    if bad := SHELL_SPECIAL & set(arg):
+def _validate_arg(arg: str, *, allow_space: bool = False) -> None:
+    # ``allow_space`` is set for ``module`` / ``spack`` specs: a spec is one
+    # logical unit that legitimately contains spaces (``boost@1.0 ~mpi
+    # arch=...``), and each token is ``shlex.quote``d before reaching the
+    # script, so the space cannot break out of its argument. The genuinely
+    # dangerous metacharacters stay banned regardless.
+    forbidden = SHELL_SPECIAL - {" "} if allow_space else SHELL_SPECIAL
+    if bad := forbidden & set(arg):
         raise ValueError(f"Shell special characters not allowed: {bad}")
 
 
@@ -64,27 +74,61 @@ def _validate_export_value(value: str) -> None:
 
 
 def build_setup_commands(setup: list[SetupItem]) -> list[str]:
-    """Build shell commands from setup items"""
+    """Build shell commands from an ordered list of setup items.
+
+    Each item is a single-key table ``{command: args}`` rendered in list order,
+    so the config author controls execution order directly. Item kinds:
+
+    - ``{export = {KEY = "val"}}`` → ``export KEY="val"`` (rendered in a
+      double-quoted context and validated with ``_validate_export_value``).
+    - ``{module = ...}`` / ``{spack = ...}`` → ``module load`` / ``spack load``.
+    - ``{<cmd> = [args...]}`` → ``<cmd> <args...>`` — the safe escape hatch.
+      Every token is metacharacter-validated and ``shlex.quote``d, so no shell
+      control operator can originate from config.
+
+    A table value is accepted only for ``export``; for any other command it is a
+    configuration error rather than a silently mishandled item.
+    """
     cmds = []
     for item in setup:
-        if isinstance(item, str):
-            _validate_arg(item)
-            cmds.append(shlex.quote(item))
-        else:
-            cmd, args = next(iter(item.items()))
-            _validate_arg(cmd)
-            args_list = [args] if isinstance(args, str) else args
-            args_list = [a for a in args_list if a]
-            for a in args_list:
-                _validate_arg(a)
+        # A multi-key table would silently drop all but the first command; make
+        # it an explicit error instead of guessing the author's intent.
+        if len(item) != 1:
+            raise ValueError(
+                f"Each setup item must have exactly one command key: {item!r}"
+            )
+        cmd, args = next(iter(item.items()))
+        _validate_arg(cmd)
+        if cmd == "export":
+            if not isinstance(args, dict):
+                raise ValueError(
+                    f"'export' requires a table of KEY = value pairs: {args!r}"
+                )
+            for key, value in args.items():
+                _validate_arg(key)
+                _validate_export_value(value)
+                cmds.append(f'export {key}="{value}"')
+            continue
+        if isinstance(args, dict):
+            raise ValueError(
+                f"A table value is only allowed for 'export', not {cmd!r}: {args!r}"
+            )
+        allow_space = cmd in {"module", "spack"}
+        args_list = [args] if isinstance(args, str) else args
+        args_list = [a for a in args_list if a]
+        for a in args_list:
+            _validate_arg(a, allow_space=allow_space)
+        if cmd in {"module", "spack"}:
+            # ``module load`` / ``spack load`` need an operand; an empty spec
+            # would emit a bare ``load`` that errors on the remote, so reject it
+            # rather than ship a malformed command.
+            if not args_list:
+                raise ValueError(f"{cmd!r} requires a spec: {args!r}")
             quoted_args = " ".join(shlex.quote(a) for a in args_list)
-            if cmd == "module":
-                cmds.append(f"module load {quoted_args}")
-            elif cmd == "spack":
-                cmds.append(f"spack load {quoted_args}")
-            else:
-                parts = [shlex.quote(cmd)] + [shlex.quote(a) for a in args_list]
-                cmds.append(" ".join(parts))
+            cmds.append(f"{cmd} load {quoted_args}")
+        else:
+            parts = [shlex.quote(cmd)] + [shlex.quote(a) for a in args_list]
+            cmds.append(" ".join(parts))
     return cmds
 
 
@@ -97,27 +141,22 @@ class ClusterConfig(BaseModel):
 
 
 class EnvConfig(BaseModel):
-    """Environment configuration"""
+    """Environment configuration.
 
-    modules: list[str] = []
-    spack: list[str] = []
+    Environment setup is a single ordered ``setup`` list; commands render in
+    list order, which is the one place execution order is declared.
+    ``extra="forbid"`` makes a removed bucket key (the former ``modules`` /
+    ``spack`` / ``exports`` fields) fail loudly rather than be silently dropped
+    — a silent drop would leave the environment unconfigured.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     setup: list[SetupItem] = []
-    exports: dict[str, str] = {}
 
     def get_setup_commands(self) -> list[str]:
-        """Build commands: modules → spack → setup → exports"""
-        items: list[SetupItem] = []
-        for m in self.modules:
-            items.append({"module": m})
-        for s in self.spack:
-            items.append({"spack": s})
-        items.extend(self.setup)
-        cmds = build_setup_commands(items)
-        for key, value in self.exports.items():
-            _validate_arg(key)
-            _validate_export_value(value)
-            cmds.append(f'export {key}="{value}"')
-        return cmds
+        """Render the ordered setup list to shell commands."""
+        return build_setup_commands(self.setup)
 
 
 class SyncConfig(BaseModel):
@@ -288,7 +327,9 @@ class ConfigManager:
                     "scheduler": "pjm",
                 },
                 "env": {
-                    "modules": ["gcc/12.2.0"],
+                    "setup": [
+                        {"module": "gcc/12.2.0"},
+                    ],
                 },
                 "sync": {
                     "ignore": ["crewster.toml", ".git"],
@@ -312,7 +353,10 @@ class ConfigManager:
                     "scheduler": "slurm",
                 },
                 "env": {
-                    "modules": ["gcc/12.2.0", "cuda/12.2"],
+                    "setup": [
+                        {"module": "gcc/12.2.0"},
+                        {"module": "cuda/12.2"},
+                    ],
                 },
                 "sync": {
                     "ignore": ["crewster.toml", ".git"],

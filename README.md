@@ -212,12 +212,12 @@ workdir = "/scratch/user/proj"    # Remote working directory; all codes and data
 scheduler = "slurm"                # "slurm" (default) or "pjm"
 
 [env]
-modules = ["gcc/12.2.0", "cuda/12.2"]  # Modules to load (shorthand for module load)
-spack = ["python@3.11"]                # Spack packages to load (shorthand for spack load)
-setup = [                              # Additional setup commands
-    {source = "/path/to/venv/bin/activate"},
-    {export = ["VAR=value"]},          # {command = [args...]} format
-    "some_cmd",                        # String: command without args
+# A single ordered list. Commands run in list order.
+setup = [
+    {module = "gcc/12.2.0"},                  # → module load gcc/12.2.0
+    {spack = "python@3.11"},                  # → spack load python@3.11
+    {source = ["/path/to/venv/bin/activate"]},
+    {export = {VAR = "value"}},               # → export VAR="value"
 ]
 
 [sync]
@@ -234,31 +234,47 @@ gpus = 1               # Example (Slurm): number of GPUs
 
 ### Environment Setup
 
-Commands are executed in this order: `modules` → `spack` → `setup`.
+`setup` is a single ordered list of items. Each item is a one-key table
+`{command = args}`, and items run in the order they are written — `setup` is the
+one place execution order is declared.
 
-`modules` and `spack` are shorthand syntax:
+Item kinds:
 
-- `modules = ["gcc/12.2.0"]` expands to `module load gcc/12.2.0`
-- `spack = ["python@3.11"]` expands to `spack load python@3.11`
+- `{module = "gcc/12.2.0"}` → `module load gcc/12.2.0`
+- `{spack = "python@3.11"}` → `spack load python@3.11`
+- `{export = {KEY = "val"}}` → `export KEY="val"`
+- `{command = [args...]}` → `command args...` — generic escape hatch for any
+  single command, e.g. `{ulimit = ["-s", "unlimited"]}` → `ulimit -s unlimited`.
+  A no-argument command is written `{command = []}`.
 
-`setup` accepts:
+Because a Spack spec is a single unit that contains spaces (version + variants +
+arch), `module` and `spack` accept spaces in the spec:
 
-- String: command without args (e.g., `"some_cmd"`)
-- Dict: `{command = args}` format (e.g., `{export = ["VAR=value"]}` → `export VAR=value`)
-- Special commands `module` and `spack` in dict format expand to `module load` / `spack load`
+```toml
+{spack = "boost@1.86.0 ~mpi arch=linux-rhel8-a64fx"}
+```
 
-If you need a different execution order, put everything in `setup`:
+To enable Spack itself before loading, source its setup script first — order is
+under your control:
 
 ```toml
 [env]
 setup = [
-    {spack = "python@3.11"},
-    {module = "gcc/12.2.0"},
-    {source = "/path/to/venv/bin/activate"},
+    {source = ["/opt/spack/share/spack/setup-env.sh"]},
+    {spack = "boost@1.86.0 ~mpi arch=linux-rhel8-a64fx"},
 ]
 ```
 
-Shell special characters (`` ;|&`$<>\'"\n `` and space) are prohibited in arguments for security.
+Shell special characters (`` ;|&`$<>\'"\n ``) are prohibited in arguments for
+security. Arguments to `module`, `spack`, and generic commands are shell-quoted
+before they reach the job script (a space is allowed only inside a `module` /
+`spack` spec, as above). An `export` value is instead rendered into a
+double-quoted context and validated for it, so `${VAR}` references are kept while
+command substitution (`$(...)`, backticks, `${VAR@P}`) is rejected.
+
+There is intentionally no bare-string or inline raw-command form: an
+unvalidated command is arbitrary code execution. Put arbitrary shell logic in a
+remote script and invoke it with `{source = ["script.sh"]}`.
 
 ### PJM Configuration
 

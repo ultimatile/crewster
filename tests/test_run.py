@@ -13,7 +13,7 @@ from crewster.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig
 def sample_config():
     return HpcConfig(
         cluster=ClusterConfig(host="myhpc", workdir="/scratch/user/proj"),
-        env=EnvConfig(modules=["gcc/12.2.0"]),
+        env=EnvConfig(setup=[{"module": "gcc/12.2.0"}]),
         slurm=SlurmConfig(partition="gpu", time="02:00:00", mem="32G", gpus=1),
     )
 
