@@ -234,18 +234,19 @@ gpus = 1               # Example (Slurm): number of GPUs
 
 ### Environment Setup
 
-`setup` is a single ordered list of items. Each item is a one-key table
-`{command = args}`, and items run in the order they are written — `setup` is the
-one place execution order is declared.
+`setup` is a single ordered list of items. Each item is a one-key table whose
+key is the command name, and items run in the order they are written — `setup`
+is the one place execution order is declared.
 
 Item kinds:
 
 - `{module = "gcc/12.2.0"}` → `module load gcc/12.2.0`
 - `{spack = "python@3.11"}` → `spack load python@3.11`
 - `{export = {KEY = "val"}}` → `export KEY="val"`
-- `{command = [args...]}` → `command args...` — generic escape hatch for any
-  single command, e.g. `{ulimit = ["-s", "unlimited"]}` → `ulimit -s unlimited`.
-  A no-argument command is written `{command = []}`.
+- Any other key is a generic command rendered as `<key> <args...>`, e.g.
+  `{ulimit = ["-s", "unlimited"]}` → `ulimit -s unlimited`, or
+  `{source = ["/path/to/venv/bin/activate"]}` → `source /path/to/venv/bin/activate`.
+  Pass arguments as a list; a no-argument command is `{mycmd = []}`.
 
 Because a Spack spec is a single unit that contains spaces (version + variants +
 arch), `module` and `spack` accept spaces in the spec:

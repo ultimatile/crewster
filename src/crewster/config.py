@@ -73,6 +73,17 @@ def _validate_export_value(value: str) -> None:
     _validate_dq_shell_value(value, label="export value")
 
 
+# POSIX environment variable name. A name that is not a valid shell identifier
+# (``123FOO``, ``FOO-BAR``) would emit an ``export`` the remote shell rejects;
+# reject it at config time so the failure is loud and local.
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _validate_export_key(key: str) -> None:
+    if not _ENV_NAME.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+
+
 def build_setup_commands(setup: list[SetupItem]) -> list[str]:
     """Build shell commands from an ordered list of setup items.
 
@@ -105,7 +116,7 @@ def build_setup_commands(setup: list[SetupItem]) -> list[str]:
                     f"'export' requires a table of KEY = value pairs: {args!r}"
                 )
             for key, value in args.items():
-                _validate_arg(key)
+                _validate_export_key(key)
                 _validate_export_value(value)
                 cmds.append(f'export {key}="{value}"')
             continue

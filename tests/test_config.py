@@ -205,9 +205,12 @@ class TestEnvConfig:
         with pytest.raises(ValueError, match="Unsafe characters"):
             config.get_setup_commands()
 
-    def test_export_rejects_invalid_key(self):
-        config = EnvConfig(setup=[{"export": {"FOO;BAR": "value"}}])
-        with pytest.raises(ValueError):
+    @pytest.mark.parametrize("key", ["FOO;BAR", "123FOO", "FOO-BAR", "FOO BAR", ""])
+    def test_export_rejects_invalid_key(self, key):
+        # An export name that is not a valid shell identifier would emit an
+        # `export` the remote shell rejects, so reject it at config time.
+        config = EnvConfig(setup=[{"export": {key: "value"}}])
+        with pytest.raises(ValueError, match="Invalid environment variable name"):
             config.get_setup_commands()
 
     # --- clean-break rejections ---------------------------------------------
