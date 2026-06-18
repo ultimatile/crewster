@@ -249,11 +249,8 @@ Item kinds:
   Pass arguments as a list; a no-argument command is `{mycmd = []}`.
 
 Because a Spack spec is a single unit that contains spaces (version + variants +
-arch), `module` and `spack` accept spaces in the spec:
-
-```toml
-{spack = "boost@1.86.0 ~mpi arch=linux-rhel8-a64fx"}
-```
+arch), `module` and `spack` accept spaces in the spec, e.g.
+`{spack = "boost@1.86.0 ~mpi arch=linux-rhel8-a64fx"}`.
 
 To enable Spack itself before loading, source its setup script first — order is
 under your control:
