@@ -129,17 +129,32 @@ class TestEnvConfig:
         config = EnvConfig(setup=[{"nvidia-smi": []}])
         assert config.get_setup_commands() == ["nvidia-smi"]
 
-    @pytest.mark.parametrize("spec", ["", []])
-    def test_module_requires_spec(self, spec):
-        # An empty spec would emit a bare `module load` that errors remotely.
-        config = EnvConfig(setup=[{"module": spec}])
+    @pytest.mark.parametrize("cmd", ["module", "spack"])
+    def test_module_spack_empty_list_requires_spec(self, cmd):
+        # An empty list would emit a bare `load` that errors remotely.
+        config = EnvConfig(setup=[{cmd: []}])
         with pytest.raises(ValueError, match="requires a spec"):
             config.get_setup_commands()
 
-    @pytest.mark.parametrize("spec", ["", []])
-    def test_spack_requires_spec(self, spec):
-        config = EnvConfig(setup=[{"spack": spec}])
-        with pytest.raises(ValueError, match="requires a spec"):
+    @pytest.mark.parametrize("cmd", ["module", "spack"])
+    @pytest.mark.parametrize("spec", ["", ["", "boost@1.86.0"]])
+    def test_module_spack_reject_empty_token(self, cmd, spec):
+        # An empty token is rejected rather than silently dropped, so it cannot
+        # render a partial command.
+        config = EnvConfig(setup=[{cmd: spec}])
+        with pytest.raises(ValueError, match="empty argument"):
+            config.get_setup_commands()
+
+    def test_generic_command_requires_list_not_string(self):
+        # A bare string is the single-spec form for module / spack only; a
+        # generic command must pass an explicit argument list.
+        config = EnvConfig(setup=[{"source": "/path/setup-env.sh"}])
+        with pytest.raises(ValueError, match="requires a list of arguments"):
+            config.get_setup_commands()
+
+    def test_generic_command_rejects_empty_token(self):
+        config = EnvConfig(setup=[{"ulimit": ["-s", ""]}])
+        with pytest.raises(ValueError, match="empty argument"):
             config.get_setup_commands()
 
     def test_generic_command_rejects_metacharacters(self):

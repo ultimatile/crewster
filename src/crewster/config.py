@@ -125,8 +125,21 @@ def build_setup_commands(setup: list[SetupItem]) -> list[str]:
                 f"A table value is only allowed for 'export', not {cmd!r}: {args!r}"
             )
         allow_space = cmd in {"module", "spack"}
-        args_list = [args] if isinstance(args, str) else args
-        args_list = [a for a in args_list if a]
+        # A bare string is the single-spec form for module / spack only; a
+        # generic command takes an explicit argument list so token boundaries
+        # are unambiguous (``"-s unlimited"`` would otherwise be one arg).
+        if isinstance(args, str):
+            if not allow_space:
+                raise ValueError(
+                    f"{cmd!r} requires a list of arguments, not a string: {args!r}"
+                )
+            args_list = [args]
+        else:
+            args_list = args
+        # Reject empty tokens rather than silently dropping them, so a typo like
+        # ``["", "boost"]`` fails loudly instead of rendering a partial command.
+        if any(not a for a in args_list):
+            raise ValueError(f"{cmd!r} has an empty argument: {args!r}")
         for a in args_list:
             _validate_arg(a, allow_space=allow_space)
         if cmd in {"module", "spack"}:
