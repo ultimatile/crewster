@@ -1,6 +1,6 @@
 [project]
 name = "crewster"
-version = "0.6.0"
+version = "0.7.0"
 description = "A CLI that makes a remote HPC cluster feel local — sync your working tree, run a quick job (Slurm/PJM), pull results."
 readme = "README.md"
 requires-python = ">=3.11"
