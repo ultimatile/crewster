@@ -70,7 +70,7 @@ When `$XDG_CONFIG_HOME/crewster/config.toml` exists, it is used as the source in
 ### `crewster sync`
 
 Syncs local files to the remote HPC cluster using rsync.
-Always syncs the entire project root (where `crewster.toml` is located), regardless of which subdirectory you run from.
+Always syncs the entire project root (where `crewster.toml` is located, or the `--project-dir` override), regardless of which subdirectory you run from.
 
 ```bash
 crewster sync                # sync files
@@ -160,8 +160,18 @@ For backward compatibility, the legacy `$HPC_CONFIG` environment variable and a 
 The directory containing `crewster.toml` is the **project root**. This affects:
 
 - **`crewster sync`**: always syncs the entire project root to `workdir`, regardless of CWD
-- **`crewster submit`**: sets the job's `cd` to `workdir` + (CWD relative to project root)
+- **`crewster exec` / `crewster submit`**: set the command's / job's `cd` to `workdir` + (CWD relative to project root)
 - **`.crewster/runs/`**: run metadata is always stored at the project root
+
+To keep the config file outside the working tree, pass `--project-dir` to override the derived project root:
+
+```bash
+crewster sync --config ~/configs/myproj.toml --project-dir ~/work/myproj
+```
+
+The override itself is never discovered — it must be passed explicitly, and the current directory is never implicitly treated as the root. Without the flag, the project root always comes from the config file's location.
+
+`--project-dir` requires the config to be explicit too (`--config` or `$CREWSTER_CONFIG`); combining it with walk-up discovery is rejected so a stray ancestor `crewster.toml` can never pair another project's cluster settings with the override tree. The override is per-invocation: commands that read run metadata (`status`, `list`, `job-output`, `wait`) must be given the same `--project-dir` the run was submitted with.
 
 `crewster init` does not walk up — it always creates `crewster.toml` in the current directory.
 
