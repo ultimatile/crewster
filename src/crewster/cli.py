@@ -46,7 +46,15 @@ class DetailMode(str, Enum):
 
 # Type alias for config option
 ConfigOption = Annotated[
-    Optional[Path], typer.Option("--config", "-c", help="Config file path")
+    Optional[Path],
+    typer.Option(
+        "--config",
+        "-c",
+        help=(
+            "Config file path. Its directory is the default project "
+            "root (the local sync root)."
+        ),
+    ),
 ]
 WorkdirOption = Annotated[
     Optional[str], typer.Option("--workdir", "-w", help="Override remote workdir")
