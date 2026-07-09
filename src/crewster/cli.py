@@ -51,6 +51,17 @@ ConfigOption = Annotated[
 WorkdirOption = Annotated[
     Optional[str], typer.Option("--workdir", "-w", help="Override remote workdir")
 ]
+ProjectDirOption = Annotated[
+    Optional[Path],
+    typer.Option(
+        "--project-dir",
+        help=(
+            "Override the project root (default: the config file's directory). "
+            "The project root is the local sync root, the base for the remote "
+            "working-directory offset, and where .crewster/runs is stored."
+        ),
+    ),
+]
 
 
 def _warn_legacy(message: str) -> None:
@@ -67,13 +78,19 @@ def _resolve_config_path(
     config_path: Optional[Path],
     walk_up: bool = True,
     allow_legacy: bool = True,
-) -> Path:
-    """Resolve the config path.
+) -> tuple[Path, bool]:
+    """Resolve the config path, returning ``(path, explicit)``.
 
     Order: ``--config`` > ``$CREWSTER_CONFIG`` > ``$HPC_CONFIG`` > walk-up
     discovery (``crewster.toml`` then legacy ``hpc.toml``) > CWD
     ``crewster.toml``. The legacy env var and legacy filename are read-only
     fallbacks that emit a deprecation warning and are removed by v1.0.
+
+    ``explicit`` is True when the user named the config directly (flag or an
+    env var, the deprecated ``$HPC_CONFIG`` included) and False when it was
+    discovered (walk-up or the CWD fallback). Provenance is reported here —
+    the one place that owns the precedence order — so consumers such as the
+    ``--project-dir`` guard cannot drift from the resolution branches.
 
     ``allow_legacy=False`` (used by ``init``) drops every legacy branch, so the
     command never resolves to ``$HPC_CONFIG`` nor to an ``hpc.toml`` name and
@@ -81,15 +98,19 @@ def _resolve_config_path(
     arbitrary user path and never triggers a deprecation warning regardless of
     its filename.
     """
+    # Explicit sources are expanded here so a tilde the shell did not expand
+    # (quoted flag value, env var set outside a shell) resolves the same way
+    # ``--project-dir`` and ``sync.pull_dir`` do. Discovered paths cannot
+    # contain a tilde, so the walk-up / CWD branches need no expansion.
     if config_path:
-        return config_path
+        return _expand_user_path(config_path, "--config"), True
     if env_config := os.environ.get("CREWSTER_CONFIG"):
-        return Path(env_config)
+        return _expand_user_path(Path(env_config), "$CREWSTER_CONFIG"), True
     if allow_legacy and (env_config := os.environ.get("HPC_CONFIG")):
         _warn_legacy(
             "$HPC_CONFIG is deprecated; use $CREWSTER_CONFIG (removed in v1.0)"
         )
-        return Path(env_config)
+        return _expand_user_path(Path(env_config), "$HPC_CONFIG"), True
     if walk_up:
         names = ("crewster.toml", "hpc.toml") if allow_legacy else ("crewster.toml",)
         found = find_config(names)
@@ -100,19 +121,67 @@ def _resolve_config_path(
                     f"{path} uses the legacy name 'hpc.toml'; "
                     "rename to 'crewster.toml' (removed in v1.0)"
                 )
-            return path
-    return Path("crewster.toml")
+            return path, False
+    return Path("crewster.toml"), False
 
 
-def _load_config(config_path: Optional[Path]) -> tuple[Path, Path, HpcConfig]:
-    """Resolve and load config, returning config path, project root, and config"""
-    path = _resolve_config_path(config_path)
+def _expand_user_path(path: Path, label: str) -> Path:
+    """``expanduser`` with the CLI's error convention.
+
+    A tilde the shell did not expand (quoted, or injected from a script) must
+    still resolve, but ``Path.expanduser`` raises ``RuntimeError`` for an
+    unknown user (``~nosuchuser/...``) or an undeterminable home directory —
+    turn that into the clean exit-1 error the surrounding validation promises
+    instead of a traceback.
+    """
+    try:
+        return path.expanduser()
+    except RuntimeError:
+        print(f"Cannot expand user in {label}: {path}")
+        raise typer.Exit(1) from None
+
+
+def _load_config(
+    config_path: Optional[Path], project_dir: Optional[Path]
+) -> tuple[Path, HpcConfig]:
+    """Resolve and load config, returning the project root and the config.
+
+    The project root defaults to the config file's parent directory, which
+    keeps the config an in-tree anchor. ``project_dir`` overrides it for
+    layouts where the config lives outside the working tree; the override is
+    an explicit path only — never discovered, never implied by CWD. It is
+    validated here so every consumer receives an existing, resolved directory
+    (``relative_to`` comparisons downstream require an absolute path).
+    ``project_dir`` is deliberately non-defaulted so every command states its
+    choice — a command cannot accept ``--project-dir`` yet forget to forward it.
+
+    ``project_dir`` additionally requires the config itself to be explicit
+    (``--config`` or a config env var): pairing an explicit root with a
+    walk-up-discovered config would let a stray ancestor ``crewster.toml``
+    silently supply another project's cluster settings for the override tree.
+    """
+    path, explicit = _resolve_config_path(config_path)
+    if project_dir is not None and not explicit:
+        print(
+            "--project-dir requires an explicit config: "
+            "pass --config or set $CREWSTER_CONFIG"
+        )
+        raise typer.Exit(1)
     if not path.exists():
         print(f"Config file not found: {path}")
         raise typer.Exit(1)
     manager = ConfigManager()
-    project_root = path.resolve().parent
-    return path, project_root, manager.load_config(path)
+    if project_dir is not None:
+        # ``is_dir()`` is False for both a missing path and an existing
+        # non-directory, so one check rejects both misuses.
+        project_dir = _expand_user_path(project_dir, "--project-dir")
+        if not project_dir.is_dir():
+            print(f"Project directory not found or not a directory: {project_dir}")
+            raise typer.Exit(1)
+        project_root = project_dir.resolve()
+    else:
+        project_root = path.resolve().parent
+    return project_root, manager.load_config(path)
 
 
 def _get_user_config_path() -> Path:
@@ -170,7 +239,7 @@ def init(
     """Initialize HPC project configuration"""
     # ``allow_legacy=False`` keeps init from ever resolving to $HPC_CONFIG or an
     # hpc.toml name, so it writes crewster.toml only and never the legacy file.
-    config_path = _resolve_config_path(config, walk_up=False, allow_legacy=False)
+    config_path, _ = _resolve_config_path(config, walk_up=False, allow_legacy=False)
     if config_path.exists():
         print(f"Config file already exists: {config_path}")
         return
@@ -194,9 +263,10 @@ def sync(
     pull: bool = typer.Option(False, "--pull", help="Only pull remote to local"),
     workdir: WorkdirOption = None,
     config: ConfigOption = None,
+    project_dir: ProjectDirOption = None,
 ):
     """Sync files bidirectionally with remote HPC cluster (push then pull)"""
-    config_path, project_root, hpc_config = _load_config(config)
+    project_root, hpc_config = _load_config(config, project_dir)
     if workdir:
         hpc_config.cluster.workdir = workdir
 
@@ -238,7 +308,9 @@ def sync(
     if do_pull:
         pull_dir = None
         if hpc_config.sync.pull_dir:
-            pull_dir = Path(hpc_config.sync.pull_dir).expanduser().resolve()
+            pull_dir = _expand_user_path(
+                Path(hpc_config.sync.pull_dir), "sync.pull_dir"
+            ).resolve()
             if not dry_run:
                 pull_dir.mkdir(parents=True, exist_ok=True)
             print(f"==> Pull (remote → {pull_dir})")
@@ -282,9 +354,10 @@ def exec_cmd(
         Optional[str], typer.Option("--workdir", help="Override remote workdir")
     ] = None,
     config: ConfigOption = None,
+    project_dir: ProjectDirOption = None,
 ):
     """Execute a command on the login node (not via scheduler)"""
-    config_path, project_root, hpc_config = _load_config(config)
+    project_root, hpc_config = _load_config(config, project_dir)
     if workdir:
         hpc_config.cluster.workdir = workdir
 
@@ -342,9 +415,10 @@ def submit(
         Optional[str], typer.Option("--workdir", help="Override remote workdir")
     ] = None,
     config: ConfigOption = None,
+    project_dir: ProjectDirOption = None,
 ):
     """Submit a job to the scheduler"""
-    config_path, project_root, hpc_config = _load_config(config)
+    project_root, hpc_config = _load_config(config, project_dir)
     if workdir:
         hpc_config.cluster.workdir = workdir
 
@@ -448,9 +522,10 @@ def status(
         help="For array / het jobs: 'summary' (aggregate line) or 'tasks' (per-task blocks)",
     ),
     config: ConfigOption = None,
+    project_dir: ProjectDirOption = None,
 ):
     """Check job status (accepts run_id or job_id)"""
-    config_path, project_root, hpc_config = _load_config(config)
+    project_root, hpc_config = _load_config(config, project_dir)
 
     if not id:
         print("Please specify a run_id or job_id")
@@ -523,9 +598,9 @@ def status(
 
 
 @app.command(name="list")
-def list_runs(config: ConfigOption = None):
+def list_runs(config: ConfigOption = None, project_dir: ProjectDirOption = None):
     """List all runs"""
-    config_path, project_root, hpc_config = _load_config(config)
+    project_root, hpc_config = _load_config(config, project_dir)
 
     runs_dir = project_root / ".crewster" / "runs"
     run_manager = RunManager(config=hpc_config, runs_dir=runs_dir)
@@ -553,9 +628,10 @@ def job_output(
         help="Stream output as the job runs (tail -F equivalent)",
     ),
     config: ConfigOption = None,
+    project_dir: ProjectDirOption = None,
 ):
     """Show job output (accepts run_id or job_id)"""
-    config_path, project_root, hpc_config = _load_config(config)
+    project_root, hpc_config = _load_config(config, project_dir)
 
     runs_dir = project_root / ".crewster" / "runs"
     run_manager = RunManager(config=hpc_config, runs_dir=runs_dir)
@@ -588,9 +664,9 @@ def job_output(
 
 
 @app.command()
-def wait(id: str, config: ConfigOption = None):
+def wait(id: str, config: ConfigOption = None, project_dir: ProjectDirOption = None):
     """Wait for a run to complete (accepts run_id or job_id)"""
-    config_path, project_root, hpc_config = _load_config(config)
+    project_root, hpc_config = _load_config(config, project_dir)
 
     runs_dir = project_root / ".crewster" / "runs"
     run_manager = RunManager(config=hpc_config, runs_dir=runs_dir)

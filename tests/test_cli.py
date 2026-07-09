@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from crewster.main import app
 from crewster import cli  # noqa: F401 - register commands
 
@@ -662,8 +664,9 @@ def test_resolve_crewster_env_wins_over_legacy(temp_dir, monkeypatch, capsys):
     monkeypatch.chdir(temp_dir)
     monkeypatch.setenv("CREWSTER_CONFIG", "/new/crewster.toml")
     monkeypatch.setenv("HPC_CONFIG", "/old/hpc.toml")
-    path = cli._resolve_config_path(None)
+    path, explicit = cli._resolve_config_path(None)
     assert path == Path("/new/crewster.toml")
+    assert explicit
     assert capsys.readouterr().err == ""
 
 
@@ -671,8 +674,9 @@ def test_resolve_legacy_env_warns(temp_dir, monkeypatch, capsys):
     """A lone $HPC_CONFIG is honored but warns on stderr."""
     monkeypatch.chdir(temp_dir)
     monkeypatch.setenv("HPC_CONFIG", "/old/hpc.toml")
-    path = cli._resolve_config_path(None)
+    path, explicit = cli._resolve_config_path(None)
     assert path == Path("/old/hpc.toml")
+    assert explicit
     assert "HPC_CONFIG" in capsys.readouterr().err
 
 
@@ -681,8 +685,9 @@ def test_resolve_explicit_config_never_warns(temp_dir, monkeypatch, capsys):
     even when its basename is the legacy hpc.toml."""
     monkeypatch.chdir(temp_dir)
     legacy = temp_dir / "hpc.toml"
-    path = cli._resolve_config_path(legacy)
+    path, explicit = cli._resolve_config_path(legacy)
     assert path == legacy
+    assert explicit
     assert capsys.readouterr().err == ""
 
 
@@ -690,8 +695,9 @@ def test_resolve_walk_up_crewster_no_warn(temp_dir, monkeypatch, capsys):
     """Walk-up discovery of crewster.toml emits no warning."""
     (temp_dir / "crewster.toml").write_text("x")
     monkeypatch.chdir(temp_dir)
-    path = cli._resolve_config_path(None)
+    path, explicit = cli._resolve_config_path(None)
     assert path == (temp_dir / "crewster.toml").resolve()
+    assert not explicit
     assert capsys.readouterr().err == ""
 
 
@@ -699,8 +705,9 @@ def test_resolve_walk_up_legacy_warns(temp_dir, monkeypatch, capsys):
     """Walk-up discovery falling back to hpc.toml warns on stderr."""
     (temp_dir / "hpc.toml").write_text("x")
     monkeypatch.chdir(temp_dir)
-    path = cli._resolve_config_path(None)
+    path, explicit = cli._resolve_config_path(None)
     assert path == (temp_dir / "hpc.toml").resolve()
+    assert not explicit
     assert "hpc.toml" in capsys.readouterr().err
 
 
@@ -709,8 +716,9 @@ def test_resolve_crewster_wins_same_dir(temp_dir, monkeypatch, capsys):
     (temp_dir / "crewster.toml").write_text("x")
     (temp_dir / "hpc.toml").write_text("x")
     monkeypatch.chdir(temp_dir)
-    path = cli._resolve_config_path(None)
+    path, explicit = cli._resolve_config_path(None)
     assert path == (temp_dir / "crewster.toml").resolve()
+    assert not explicit
     assert capsys.readouterr().err == ""
 
 
@@ -722,8 +730,9 @@ def test_resolve_nearest_legacy_beats_ancestor_crewster(temp_dir, monkeypatch, c
     child.mkdir()
     (child / "hpc.toml").write_text("x")
     monkeypatch.chdir(child)
-    path = cli._resolve_config_path(None)
+    path, explicit = cli._resolve_config_path(None)
     assert path == (child / "hpc.toml").resolve()
+    assert not explicit
     assert "hpc.toml" in capsys.readouterr().err
 
 
@@ -746,11 +755,9 @@ def test_walk_up_finds_config(cli_runner, temp_dir, monkeypatch):
     child = temp_dir / "runs" / "bench1"
     child.mkdir(parents=True)
     monkeypatch.chdir(child)
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        result = cli_runner.invoke(app, ["sync"])
-        assert result.exit_code == 0
-        assert "Config file not found" not in result.stdout
+    result, _ = _sync_rsync_args(cli_runner, ["sync"])
+    assert result.exit_code == 0
+    assert "Config file not found" not in result.stdout
 
 
 def test_sync_uses_project_root(cli_runner, temp_dir, monkeypatch):
@@ -761,15 +768,218 @@ def test_sync_uses_project_root(cli_runner, temp_dir, monkeypatch):
     child = temp_dir / "runs" / "bench1"
     child.mkdir(parents=True)
     monkeypatch.chdir(child)
+    _, call_args = _sync_rsync_args(cli_runner, ["sync"])
+    # rsync should use project root, not the child directory
+    assert any(str(temp_dir.resolve()) in str(a) for a in call_args)
+    # Should NOT contain the child subpath as the source
+    assert not any(str(child) in str(a) for a in call_args)
+
+
+def _project_dir_layout(temp_dir) -> tuple[Path, Path]:
+    """Config outside the working tree: config in ``configs/``, work in
+    ``project/``. Returns (config file, project dir)."""
+    config_dir = temp_dir / "configs"
+    config_dir.mkdir()
+    config = config_dir / "crewster.toml"
+    config.write_text("[cluster]\nhost = 'test'\nworkdir = '/tmp'")
+    project = temp_dir / "project"
+    project.mkdir()
+    return config, project
+
+
+def _sync_rsync_args(cli_runner, args):
+    """Invoke ``sync`` with subprocess mocked out; return (result, argv).
+
+    ``argv`` flattens every ``subprocess.run`` invocation (remote-dir check,
+    push rsync, pull rsync), so path assertions cover both sync directions
+    rather than just the final call.
+    """
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        cli_runner.invoke(app, ["sync"])
-        # rsync should use project root, not the child directory
-        call_args = mock_run.call_args[0][0]
-        local_arg = [a for a in call_args if str(temp_dir.resolve()) in str(a)]
-        assert local_arg
-        # Should NOT contain the child subpath as the source
-        assert not any(str(child) in str(a) for a in call_args)
+        result = cli_runner.invoke(app, args)
+        call_args = [arg for call in mock_run.call_args_list for arg in call[0][0]]
+    return result, call_args
+
+
+def test_sync_project_dir_overrides_local_root(cli_runner, temp_dir, monkeypatch):
+    """--project-dir makes sync use the override as the rsync local root,
+    not the config file's parent directory"""
+    config, project = _project_dir_layout(temp_dir)
+    monkeypatch.chdir(project)
+    result, call_args = _sync_rsync_args(
+        cli_runner, ["sync", "--config", str(config), "--project-dir", str(project)]
+    )
+    assert result.exit_code == 0
+    assert any(str(project.resolve()) in str(a) for a in call_args)
+    assert not any(str(config.parent.resolve()) in str(a) for a in call_args)
+
+
+def _missing_path(temp_dir) -> Path:
+    return temp_dir / "missing"
+
+
+def _file_path(temp_dir) -> Path:
+    not_a_dir = temp_dir / "not_a_dir"
+    not_a_dir.write_text("")
+    return not_a_dir
+
+
+@pytest.mark.parametrize(
+    "make_bad_path", [_missing_path, _file_path], ids=["missing", "file"]
+)
+def test_project_dir_invalid_path_errors(
+    cli_runner, temp_dir, monkeypatch, make_bad_path
+):
+    """A --project-dir path that is missing or not a directory exits 1"""
+    config, project = _project_dir_layout(temp_dir)
+    monkeypatch.chdir(project)
+    result, call_args = _sync_rsync_args(
+        cli_runner,
+        [
+            "sync",
+            "--config",
+            str(config),
+            "--project-dir",
+            str(make_bad_path(temp_dir)),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Project directory not found or not a directory" in result.stdout
+    # Validation must fire before any remote command is attempted.
+    assert call_args == []
+
+
+def test_project_dir_requires_explicit_config(cli_runner, temp_dir, monkeypatch):
+    """--project-dir without --config / $CREWSTER_CONFIG exits 1 instead of
+    pairing the override with a walk-up-discovered config"""
+    config, project = _project_dir_layout(temp_dir)
+    # A stray config above CWD that walk-up discovery would latch onto.
+    (temp_dir / "crewster.toml").write_text(config.read_text())
+    monkeypatch.chdir(project)
+    result, call_args = _sync_rsync_args(
+        cli_runner, ["sync", "--project-dir", str(project)]
+    )
+    assert result.exit_code == 1
+    assert "--project-dir requires an explicit config" in result.stdout
+    # The guard must reject before any remote command is attempted.
+    assert call_args == []
+
+
+@pytest.mark.parametrize("env_var", ["CREWSTER_CONFIG", "HPC_CONFIG"])
+def test_project_dir_with_env_config(cli_runner, temp_dir, monkeypatch, env_var):
+    """An env-var config (including the legacy $HPC_CONFIG) counts as an
+    explicit config for --project-dir"""
+    config, project = _project_dir_layout(temp_dir)
+    monkeypatch.setenv(env_var, str(config))
+    monkeypatch.chdir(project)
+    result, call_args = _sync_rsync_args(
+        cli_runner, ["sync", "--project-dir", str(project)]
+    )
+    assert result.exit_code == 0
+    assert any(str(project.resolve()) in str(a) for a in call_args)
+
+
+def test_config_expands_tilde(cli_runner, temp_dir, monkeypatch):
+    """A literal tilde in --config (unexpanded by the shell) is expanded,
+    matching the --project-dir behavior on the same command line"""
+    config, project = _project_dir_layout(temp_dir)
+    monkeypatch.setenv("HOME", str(temp_dir))
+    monkeypatch.chdir(project)
+    result, call_args = _sync_rsync_args(
+        cli_runner,
+        ["sync", "--config", "~/configs/crewster.toml", "--project-dir", str(project)],
+    )
+    assert result.exit_code == 0
+    assert any(str(project.resolve()) in str(a) for a in call_args)
+
+
+def test_project_dir_unknown_user_tilde_errors(cli_runner, temp_dir, monkeypatch):
+    """A tilde path naming an unknown user exits 1 cleanly instead of
+    surfacing Path.expanduser's RuntimeError as a traceback"""
+    config, project = _project_dir_layout(temp_dir)
+    monkeypatch.chdir(project)
+    result, call_args = _sync_rsync_args(
+        cli_runner,
+        [
+            "sync",
+            "--config",
+            str(config),
+            "--project-dir",
+            "~no_such_user_crewster_test/proj",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Cannot expand user in --project-dir" in result.stdout
+    # Validation must fire before any remote command is attempted.
+    assert call_args == []
+
+
+def test_project_dir_expands_tilde(cli_runner, temp_dir, monkeypatch):
+    """A literal tilde path (unexpanded by the shell) is expanded, mirroring
+    pull_dir handling"""
+    config, project = _project_dir_layout(temp_dir)
+    monkeypatch.setenv("HOME", str(temp_dir))
+    monkeypatch.chdir(project)
+    result, call_args = _sync_rsync_args(
+        cli_runner, ["sync", "--config", str(config), "--project-dir", "~/project"]
+    )
+    assert result.exit_code == 0
+    assert any(str(project.resolve()) in str(a) for a in call_args)
+
+
+def _submit_with_project_dir(cli_runner, config, project):
+    """Invoke ``submit`` with --project-dir under a mocked JobManager.
+    Returns (result, mocked JobManager instance)."""
+    with patch("crewster.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.submit_run.return_value = "12345678"
+        result = cli_runner.invoke(
+            app,
+            [
+                "submit",
+                "echo hi",
+                "--config",
+                str(config),
+                "--project-dir",
+                str(project),
+            ],
+        )
+    return result, instance
+
+
+def test_submit_run_metadata_under_project_dir(cli_runner, temp_dir, monkeypatch):
+    """Run metadata (.crewster/runs) is created under the override, not next
+    to the config file"""
+    config, project = _project_dir_layout(temp_dir)
+    monkeypatch.chdir(project)
+    result, _ = _submit_with_project_dir(cli_runner, config, project)
+    assert result.exit_code == 0
+    assert (project / ".crewster" / "runs").is_dir()
+    assert not (config.parent / ".crewster").exists()
+
+
+def test_submit_cwd_relative_inside_project_dir(cli_runner, temp_dir, monkeypatch):
+    """With CWD inside a subdirectory of the override, the remote offset is
+    that subdirectory (the positive cwd_relative path, not the fallback)"""
+    config, project = _project_dir_layout(temp_dir)
+    subdir = project / "subdir"
+    subdir.mkdir()
+    monkeypatch.chdir(subdir)
+    result, instance = _submit_with_project_dir(cli_runner, config, project)
+    assert result.exit_code == 0
+    assert instance.submit_run.call_args.kwargs["cwd_relative"] == Path("subdir")
+
+
+def test_submit_cwd_relative_outside_project_dir_falls_back(
+    cli_runner, temp_dir, monkeypatch
+):
+    """With CWD outside the overridden project root, the offset falls back to
+    the root itself (existing ValueError fallback preserved)"""
+    config, project = _project_dir_layout(temp_dir)
+    monkeypatch.chdir(config.parent)
+    result, instance = _submit_with_project_dir(cli_runner, config, project)
+    assert result.exit_code == 0
+    assert instance.submit_run.call_args.kwargs["cwd_relative"] == Path(".")
 
 
 def test_init_does_not_walk_up(cli_runner, temp_dir, monkeypatch):
