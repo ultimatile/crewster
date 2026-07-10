@@ -192,6 +192,30 @@ def _load_config(
     return project_root, manager.load_config(path)
 
 
+def _print_run_not_found(id: str, run_manager: RunManager) -> None:
+    """Report a failed run lookup with the directory it searched.
+
+    A miss with no runs recorded at all is compatible with two causes — a
+    project-root mismatch (the command was invoked with a different
+    ``--project-dir`` / ``--config`` than at submit time, issue #44's
+    scenario) or simply nothing submitted from this root yet — so the hint
+    states the fact (no runs here) and phrases the remedy conditionally
+    rather than presuming the mismatch. With runs present, the id itself is
+    the likely problem and the hint would only misdirect. Emptiness is
+    judged by ``list_runs`` — the manager's own definition of a recorded
+    run — so stray entries (``.DS_Store``, a metadata-less dir left by an
+    aborted submit) cannot suppress the hint, and the missing-directory
+    case stays handled in one place.
+    """
+    print(f"Run not found: {id}")
+    if not run_manager.list_runs():
+        print(
+            f"(no runs recorded under {run_manager.runs_dir} — if you "
+            "submitted from a different project root, invoke with the same "
+            "--project-dir/--config as at submit time)"
+        )
+
+
 def _get_user_config_path() -> Path:
     """Get user config path from XDG_CONFIG_HOME/crewster/config.toml"""
     xdg_config = os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
@@ -651,7 +675,7 @@ def job_output(
         run = run_manager.find_run_by_job_id(id)
 
     if not run:
-        print(f"Run not found: {id}")
+        _print_run_not_found(id, run_manager)
         raise typer.Exit(1)
 
     if not run.job_id:
@@ -686,7 +710,7 @@ def wait(id: str, config: ConfigOption = None, project_dir: ProjectDirOption = N
         run = run_manager.find_run_by_job_id(id)
 
     if not run:
-        print(f"Run not found: {id}")
+        _print_run_not_found(id, run_manager)
         raise typer.Exit(1)
 
     if not run.job_id:
