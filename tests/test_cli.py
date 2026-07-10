@@ -1062,3 +1062,86 @@ def test_job_output_without_follow_uses_get_job_output(
         mock_job.get_job_output.assert_called_once_with("r1", "12345678", error=False)
         mock_job.tail_job_output.assert_not_called()
         assert "static output" in result.stdout
+
+
+def test_wait_unknown_id_does_not_create_runs_dir(cli_runner, temp_dir, monkeypatch):
+    """A failed lookup must not leave an empty .crewster tree behind:
+    lookup commands only read run metadata and create nothing
+    (https://github.com/ultimatile/crewster/issues/44)."""
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    result = cli_runner.invoke(app, ["wait", "nonexistent"])
+
+    assert result.exit_code == 1
+    assert "Run not found: nonexistent" in result.stdout
+    # With no runs recorded, the project-root hint fires.
+    assert "no runs recorded" in result.stdout
+    assert not (temp_dir / ".crewster").exists()
+
+
+def test_wait_unknown_id_with_stray_entries_still_hints(
+    cli_runner, temp_dir, monkeypatch
+):
+    """Entries that are not recorded runs — a stray file, or a metadata-less
+    dir left by an aborted submit — must not suppress the project-root hint:
+    emptiness is defined by list_runs, not by raw directory contents."""
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+    runs_dir = temp_dir / ".crewster" / "runs"
+    runs_dir.mkdir(parents=True)
+    (runs_dir / ".DS_Store").write_text("")
+    (runs_dir / "aborted_run").mkdir()
+
+    result = cli_runner.invoke(app, ["wait", "nonexistent"])
+
+    assert result.exit_code == 1
+    assert "Run not found: nonexistent" in result.stdout
+    assert "no runs recorded" in result.stdout
+
+
+def test_wait_unknown_id_with_existing_runs_omits_root_hint(
+    cli_runner, temp_dir, monkeypatch
+):
+    """With run metadata present, a lookup miss points at the id itself,
+    not a project-root mismatch, so the hint is suppressed."""
+    monkeypatch.chdir(temp_dir)
+    _setup_run_meta(temp_dir)
+
+    result = cli_runner.invoke(app, ["wait", "unknown-id"])
+
+    assert result.exit_code == 1
+    assert "Run not found: unknown-id" in result.stdout
+    assert "no runs recorded" not in result.stdout
+
+
+def test_list_without_runs_dir_prints_no_runs(cli_runner, temp_dir, monkeypatch):
+    """`list` in a fresh project reports no runs without creating .crewster
+    (https://github.com/ultimatile/crewster/issues/44)."""
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    result = cli_runner.invoke(app, ["list"])
+
+    assert result.exit_code == 0
+    assert "No runs found." in result.stdout
+    assert not (temp_dir / ".crewster").exists()
+
+
+def test_status_unknown_id_does_not_create_runs_dir(cli_runner, temp_dir, monkeypatch):
+    """An unknown id falls back to scheduler lookup (mocked here), and the
+    metadata miss must not create .crewster
+    (https://github.com/ultimatile/crewster/issues/44)."""
+    from crewster.job import JobStatus
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("crewster.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = []
+        instance.get_job_status.return_value = JobStatus.PENDING
+        result = cli_runner.invoke(app, ["status", "12345678"])
+
+    assert result.exit_code == 0
+    assert not (temp_dir / ".crewster").exists()

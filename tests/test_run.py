@@ -100,6 +100,46 @@ class TestRunManagerSaveLoad:
         assert loaded.job_id == "12345678"
 
 
+class TestRunManagerLazyRunsDir:
+    """runs_dir is created by write paths only, never by lookups, so a
+    metadata lookup against the wrong project root leaves no trace
+    (https://github.com/ultimatile/crewster/issues/44)."""
+
+    @pytest.fixture
+    def runs_dir(self, temp_dir):
+        """A runs_dir path that does not exist yet."""
+        return temp_dir / ".crewster" / "runs"
+
+    @pytest.fixture
+    def manager(self, sample_config, runs_dir):
+        return RunManager(config=sample_config, runs_dir=runs_dir)
+
+    def test_init_does_not_create_runs_dir(self, manager, runs_dir):
+        assert not runs_dir.exists()
+
+    def test_list_runs_missing_dir_returns_empty(self, manager, runs_dir):
+        assert manager.list_runs() == []
+        assert not runs_dir.exists()
+
+    def test_find_run_by_job_id_missing_dir_returns_none(self, manager, runs_dir):
+        assert manager.find_run_by_job_id("12345678") is None
+        assert not runs_dir.exists()
+
+    def test_load_run_meta_missing_dir_raises(self, manager, runs_dir):
+        with pytest.raises(FileNotFoundError):
+            manager.load_run_meta("nonexistent")
+        assert not runs_dir.exists()
+
+    def test_create_run_creates_missing_runs_dir(self, manager, runs_dir):
+        run = manager.create_run("python train.py")
+        assert (runs_dir / run.run_id).is_dir()
+
+    def test_save_run_meta_creates_missing_runs_dir(self, manager, runs_dir):
+        run = RunConfig(run_id="r1", cmd="echo hi", status="pending")
+        manager.save_run_meta(run)
+        assert (runs_dir / "r1" / "meta.toml").exists()
+
+
 class TestRunManagerList:
     def test_list_runs_empty(self, sample_config, temp_dir):
         manager = RunManager(config=sample_config, runs_dir=temp_dir)

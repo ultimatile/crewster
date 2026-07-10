@@ -24,12 +24,17 @@ class RunConfig:
 
 
 class RunManager:
-    """Manages run lifecycle and metadata"""
+    """Manages run lifecycle and metadata.
+
+    ``runs_dir`` is created lazily by the write paths (``create_run`` /
+    ``save_run_meta``), never at construction time: read-only lookups must not
+    leave an empty ``.crewster/runs`` tree behind when invoked against a
+    project root that has no runs (e.g. a wrong ``--project-dir``).
+    """
 
     def __init__(self, config: HpcConfig, runs_dir: Path):
         self.config = config
         self.runs_dir = runs_dir
-        self.runs_dir.mkdir(parents=True, exist_ok=True)
 
     def _generate_run_id(self) -> str:
         """Generate unique run ID: YYYY-MM-DD_HHMMSS_<hash>"""
@@ -77,9 +82,18 @@ class RunManager:
         return RunConfig(**filtered_data)
 
     def list_runs(self) -> list[RunConfig]:
-        """List all runs"""
+        """List all runs; a missing ``runs_dir`` reads as "no runs".
+
+        EAFP instead of an ``is_dir()`` pre-check: no window between check
+        and iteration, and a ``runs_dir`` that exists as a regular file
+        still fails loudly instead of masquerading as an empty run list.
+        """
+        try:
+            run_dirs = list(self.runs_dir.iterdir())
+        except FileNotFoundError:
+            return []
         runs = []
-        for run_dir in self.runs_dir.iterdir():
+        for run_dir in run_dirs:
             if run_dir.is_dir():
                 meta_path = run_dir / "meta.toml"
                 if meta_path.exists():
