@@ -130,6 +130,16 @@ class TestRunManagerLazyRunsDir:
             manager.load_run_meta("nonexistent")
         assert not runs_dir.exists()
 
+    def test_list_runs_runs_dir_is_file_raises(self, manager, runs_dir):
+        """Contract: an empty result means "no runs recorded", so only a
+        MISSING runs_dir may read as empty. A runs_dir path occupied by a
+        non-directory is corrupted state and must fail loudly instead of
+        masquerading as an empty run list."""
+        runs_dir.parent.mkdir(parents=True)
+        runs_dir.write_text("stray")
+        with pytest.raises(NotADirectoryError):
+            manager.list_runs()
+
     def test_create_run_creates_missing_runs_dir(self, manager, runs_dir):
         run = manager.create_run("python train.py")
         assert (runs_dir / run.run_id).is_dir()
