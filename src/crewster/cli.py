@@ -578,10 +578,6 @@ def status(
         print(f"Run {run.run_id} has no job ID")
         raise typer.Exit(1)
 
-    if not job_id:
-        print(f"Run not found: {id}")
-        raise typer.Exit(1)
-
     ssh = SSHManager(host=hpc_config.cluster.host)
     job_manager = JobManager(ssh_manager=ssh, config=hpc_config)
 
@@ -595,6 +591,17 @@ def status(
         try:
             job_status = job_manager.get_job_status(job_id)
         except SchedulerError:
+            if run is None:
+                # The id failed both lookups: no local run metadata and no
+                # scheduler data. That is indistinguishable from accounting
+                # lag on a raw just-submitted job id, but it is exactly the
+                # project-root-mismatch shape issue #44 addressed in
+                # job-output/wait
+                # (https://github.com/ultimatile/crewster/issues/44), so
+                # report the metadata miss the same way rather than implying
+                # the scheduler knows the job.
+                _print_run_not_found(id, run_manager)
+                raise typer.Exit(1)
             print(
                 f"Job {job_id}: status unavailable yet (scheduler accounting not ready)"
             )
