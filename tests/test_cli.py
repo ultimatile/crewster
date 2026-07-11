@@ -402,15 +402,18 @@ def test_status_prints_friendly_message_when_status_unavailable(
     assert "scheduler accounting not ready" in result.stdout
 
 
+@pytest.mark.parametrize("detail", [[], None], ids=["no-row", "unsupported"])
 def test_status_unknown_id_with_no_scheduler_data_reports_run_not_found(
-    cli_runner, temp_dir, monkeypatch
+    cli_runner, temp_dir, monkeypatch, detail
 ):
     """An id that misses both lookups — no local run metadata AND no scheduler
     data — is reported as a metadata miss with the project-root hint, matching
     job-output/wait since issue #44
     (https://github.com/ultimatile/crewster/issues/44), instead of the
     misleading accounting-lag message
-    (https://github.com/ultimatile/crewster/issues/47)."""
+    (https://github.com/ultimatile/crewster/issues/47). Covers both detail
+    shapes that reach the fallback: [] (sacct has no row) and None (scheduler
+    exposes no detail source, e.g. PJM)."""
     from crewster.scheduler import SchedulerError
 
     monkeypatch.chdir(temp_dir)
@@ -418,7 +421,7 @@ def test_status_unknown_id_with_no_scheduler_data_reports_run_not_found(
 
     with patch("crewster.cli.JobManager") as MockJobManager:
         instance = MockJobManager.return_value
-        instance.get_job_detail.return_value = []
+        instance.get_job_detail.return_value = detail
         instance.get_job_status.side_effect = SchedulerError(
             "sacct returned no data row"
         )
