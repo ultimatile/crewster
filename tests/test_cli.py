@@ -408,10 +408,9 @@ def test_status_unknown_id_with_no_scheduler_data_reports_run_not_found(
 ):
     """An id that misses both lookups — no local run metadata AND no scheduler
     data — is reported as a metadata miss with the project-root hint, matching
-    job-output/wait since issue #44
-    (https://github.com/ultimatile/crewster/issues/44), instead of the
-    misleading accounting-lag message
-    (https://github.com/ultimatile/crewster/issues/47). Covers both detail
+    job-output/wait: run metadata lives under the project root used at submit
+    time, so a wrong --project-dir/--config produces exactly this double miss,
+    which the previous accounting-lag message misdirected. Covers both detail
     shapes that reach the fallback: [] (sacct has no row) and None (scheduler
     exposes no detail source, e.g. PJM)."""
     from crewster.scheduler import SchedulerError

@@ -594,12 +594,11 @@ def status(
             if run is None:
                 # The id failed both lookups: no local run metadata and no
                 # scheduler data. That is indistinguishable from accounting
-                # lag on a raw just-submitted job id, but it is exactly the
-                # project-root-mismatch shape issue #44 addressed in
-                # job-output/wait
-                # (https://github.com/ultimatile/crewster/issues/44), so
-                # report the metadata miss the same way rather than implying
-                # the scheduler knows the job.
+                # lag on a raw just-submitted job id, but run metadata lives
+                # under the project root used at submit time, so a wrong
+                # --project-dir/--config produces exactly this double miss.
+                # Report the metadata miss the way job-output/wait do rather
+                # than implying the scheduler knows the job.
                 _print_run_not_found(id, run_manager)
                 raise typer.Exit(1)
             print(
