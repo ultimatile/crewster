@@ -578,10 +578,6 @@ def status(
         print(f"Run {run.run_id} has no job ID")
         raise typer.Exit(1)
 
-    if not job_id:
-        print(f"Run not found: {id}")
-        raise typer.Exit(1)
-
     ssh = SSHManager(host=hpc_config.cluster.host)
     job_manager = JobManager(ssh_manager=ssh, config=hpc_config)
 
@@ -595,6 +591,16 @@ def status(
         try:
             job_status = job_manager.get_job_status(job_id)
         except SchedulerError:
+            if run is None:
+                # The id failed both lookups: no local run metadata and no
+                # scheduler data. That is indistinguishable from accounting
+                # lag on a raw just-submitted job id, but run metadata lives
+                # under the project root used at submit time, so a wrong
+                # --project-dir/--config produces exactly this double miss.
+                # Report the metadata miss the way job-output/wait do rather
+                # than implying the scheduler knows the job.
+                _print_run_not_found(id, run_manager)
+                raise typer.Exit(1)
             print(
                 f"Job {job_id}: status unavailable yet (scheduler accounting not ready)"
             )

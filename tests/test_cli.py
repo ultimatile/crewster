@@ -380,12 +380,14 @@ def test_status_falls_back_when_detail_unavailable(cli_runner, temp_dir, monkeyp
 def test_status_prints_friendly_message_when_status_unavailable(
     cli_runner, temp_dir, monkeypatch
 ):
-    """SchedulerError on the fallback ``get_job_status`` becomes a friendly
-    "status unavailable yet" line instead of an SSHError stack."""
+    """For a known run, SchedulerError on the fallback ``get_job_status``
+    becomes a friendly "status unavailable yet" line instead of an SSHError
+    stack: run metadata proves the job was submitted, so the absence is
+    accounting lag, not a bad id."""
     from crewster.scheduler import SchedulerError
 
     monkeypatch.chdir(temp_dir)
-    cli_runner.invoke(app, ["init"])
+    _setup_run_meta(temp_dir)
 
     with patch("crewster.cli.JobManager") as MockJobManager:
         instance = MockJobManager.return_value
@@ -398,6 +400,60 @@ def test_status_prints_friendly_message_when_status_unavailable(
     assert result.exit_code == 0
     assert "Job 12345678: status unavailable yet" in result.stdout
     assert "scheduler accounting not ready" in result.stdout
+
+
+@pytest.mark.parametrize("detail", [[], None], ids=["no-row", "unsupported"])
+def test_status_unknown_id_with_no_scheduler_data_reports_run_not_found(
+    cli_runner, temp_dir, monkeypatch, detail
+):
+    """An id that misses both lookups — no local run metadata AND no scheduler
+    data — is reported as a metadata miss with the project-root hint, matching
+    job-output/wait: run metadata lives under the project root used at submit
+    time, so a wrong --project-dir/--config produces exactly this double miss,
+    which the previous accounting-lag message misdirected. Covers both detail
+    shapes that reach the fallback: [] (sacct has no row) and None (scheduler
+    exposes no detail source, e.g. PJM)."""
+    from crewster.scheduler import SchedulerError
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    with patch("crewster.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = detail
+        instance.get_job_status.side_effect = SchedulerError(
+            "sacct returned no data row"
+        )
+        result = cli_runner.invoke(app, ["status", "nonexistent"])
+
+    assert result.exit_code == 1
+    assert "Run not found: nonexistent" in result.stdout
+    # With no runs recorded, the project-root hint fires.
+    assert "no runs recorded" in result.stdout
+    assert "status unavailable yet" not in result.stdout
+
+
+def test_status_unknown_id_with_existing_runs_omits_root_hint(
+    cli_runner, temp_dir, monkeypatch
+):
+    """With unrelated run metadata present, a both-lookups miss points at the
+    id itself, not a project-root mismatch, so the hint is suppressed."""
+    from crewster.scheduler import SchedulerError
+
+    monkeypatch.chdir(temp_dir)
+    _setup_run_meta(temp_dir)
+
+    with patch("crewster.cli.JobManager") as MockJobManager:
+        instance = MockJobManager.return_value
+        instance.get_job_detail.return_value = []
+        instance.get_job_status.side_effect = SchedulerError(
+            "sacct returned no data row"
+        )
+        result = cli_runner.invoke(app, ["status", "unknown-id"])
+
+    assert result.exit_code == 1
+    assert "Run not found: unknown-id" in result.stdout
+    assert "no runs recorded" not in result.stdout
 
 
 def test_status_normalizes_decorated_cancelled_state(cli_runner, temp_dir, monkeypatch):
