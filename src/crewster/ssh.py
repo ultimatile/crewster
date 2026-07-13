@@ -140,7 +140,9 @@ class SSHManager:
                 parts.append(f"stdout:\n{result.stdout.rstrip()}")
             if result.stderr:
                 parts.append(f"stderr:\n{result.stderr.rstrip()}")
-            raise SSHError("\n".join(parts), stderr=result.stderr)
+            # Empty stderr is normalized to None so the field stays a
+            # reliable "no captured stderr" sentinel per the class docstring.
+            raise SSHError("\n".join(parts), stderr=result.stderr or None)
 
         return CommandResult(
             returncode=result.returncode,

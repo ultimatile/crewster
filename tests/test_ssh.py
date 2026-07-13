@@ -176,6 +176,9 @@ class TestSSHManagerRunCommand:
                 manager.run_command("hostname")
             msg = str(exc_info.value)
             assert msg == "SSH command failed (exit 255): hostname"
+            # Empty stderr normalizes to None so the field stays a reliable
+            # "no captured stderr" sentinel.
+            assert exc_info.value.stderr is None
 
     def test_run_command_captures_stderr(self):
         manager = SSHManager(host="myhpc")
