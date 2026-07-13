@@ -9,9 +9,18 @@ from typing import Optional
 
 
 class SSHError(Exception):
-    """SSH operation error"""
+    """SSH operation error.
 
-    pass
+    ``stderr`` carries the remote command's captured stderr separately from
+    the human-readable message so callers can classify the failure (e.g. a
+    scheduler's job-id rejection signature) without parsing the message
+    string, whose format is a display concern. ``None`` when the failure
+    had no captured stderr (or the raise site predates capture).
+    """
+
+    def __init__(self, message: str, *, stderr: str | None = None):
+        super().__init__(message)
+        self.stderr = stderr
 
 
 @dataclass
@@ -131,7 +140,7 @@ class SSHManager:
                 parts.append(f"stdout:\n{result.stdout.rstrip()}")
             if result.stderr:
                 parts.append(f"stderr:\n{result.stderr.rstrip()}")
-            raise SSHError("\n".join(parts))
+            raise SSHError("\n".join(parts), stderr=result.stderr)
 
         return CommandResult(
             returncode=result.returncode,

@@ -9,16 +9,30 @@ from .ssh import SSHError
 
 
 class SchedulerError(SSHError):
-    """Scheduler returned no usable response.
+    """Scheduler returned no usable response for the requested job id.
 
-    Raised by ``parse_status`` when the scheduler's status command exits
-    cleanly but its output contains no data row from which a ``JobStatus``
-    can be derived — typically a freshly-submitted job that has not yet
-    been indexed by the accounting database (Slurm's ``sacct``) or a job
-    that aged out of the active view (PJM's ``pjstat`` post-``EXT``
-    window). Distinguishing this from a real ``JobStatus.FAILED`` lets
-    callers retry / fall through instead of treating the absence of
-    information as a terminal failure.
+    Two shapes share this type because callers treat them identically —
+    "the scheduler holds no information about this job id":
+
+    - Parse-side absence: raised by ``parse_status`` when the status
+      command exits cleanly but its output contains no data row from
+      which a ``JobStatus`` can be derived — typically a freshly-
+      submitted job that has not yet been indexed by the accounting
+      database (Slurm's ``sacct``) or a job that aged out of the active
+      view (PJM's ``pjstat`` post-``EXT`` window).
+    - Affirmative id rejection: raised by ``JobManager`` when the status
+      / detail command exits non-zero with a stderr matching the
+      scheduler's ``is_job_id_rejection`` signature — e.g. a run-id-
+      shaped argument (``r1``) handed to ``sacct -j`` / ``pjstat``,
+      which both reject non-numeric job specs outright.
+
+    Distinguishing these from a real ``JobStatus.FAILED`` or a transport
+    failure lets callers retry / fall through / report a friendly miss
+    instead of treating the absence of information as a terminal failure.
+
+    The rejection shape is raised as the ``JobIdRejectedError`` subtype so
+    callers that need to distinguish "permanently bad id" from "no data
+    yet" can; catching ``SchedulerError`` covers both.
 
     Inherits from ``SSHError`` so the transient-catch sites in
     ``JobManager`` cover it. ``get_job_status`` catches it to try the
@@ -32,6 +46,19 @@ class SchedulerError(SSHError):
     surfaces that want to discriminate "no data yet" from a real SSH /
     command failure catch ``SchedulerError`` specifically before the
     generic ``SSHError``.
+    """
+
+
+class JobIdRejectedError(SchedulerError):
+    """The scheduler affirmatively rejected the job-id argument itself.
+
+    Unlike parse-side absence (the plain ``SchedulerError`` shape),
+    rejection is deterministic: retrying or consulting a fallback view can
+    never succeed for this id. Callers use the distinction to terminate
+    immediately (``wait_for_job`` skips its missing-data budget) and to
+    report an invalid id rather than accounting lag (``status`` for a
+    known run). Callers that only need "no such job" semantics keep
+    catching ``SchedulerError``, which covers this subtype.
     """
 
 
@@ -131,6 +158,18 @@ class Scheduler(ABC):
         differing column layout cannot be misread as a real status."""
         return None
 
+    def is_job_id_rejection(self, stderr: str) -> bool:
+        """Whether ``stderr`` from a failed status / detail command is this
+        scheduler's signature for "the job-id argument itself was rejected"
+        (e.g. a non-numeric spec), as opposed to a transport or service
+        failure.
+
+        Fail-closed: the default recognizes nothing, and implementations
+        match only recorded signatures, so an unrecognized failure keeps
+        propagating as a plain ``SSHError`` rather than being misreported
+        as job absence."""
+        return False
+
     @abstractmethod
     def output_directives(self, run_dir: str) -> list[str]:
         """Bookkeeping directives that route the job's stdout/stderr under
@@ -178,6 +217,18 @@ class Slurm(Scheduler):
 
     def submit_cmd(self) -> list[str]:
         return ["sbatch", "--parsable"]
+
+    def is_job_id_rejection(self, stderr: str) -> bool:
+        # Recorded on slurm 23.02.6: `sacct -j r1 ...` exits 1 with
+        # `sacct: fatal: Bad job/step specified: r1` on stderr, for both
+        # the status_cmd and detail_cmd formats. A numeric but nonexistent
+        # id exits 0 with no rows instead (parse-side absence). Matched
+        # per line and with the `fatal:` prefix so a stray mention of the
+        # phrase inside an otherwise-transient multi-line stderr (site
+        # wrappers, mixed diagnostics) fails closed as a plain SSHError.
+        return any(
+            "fatal: Bad job/step specified" in line for line in stderr.splitlines()
+        )
 
     def parse_job_id(self, output: str) -> str:
         return output.strip()
@@ -371,6 +422,20 @@ class PJM(Scheduler):
 
     def submit_cmd(self) -> list[str]:
         return ["pjsub"]
+
+    def is_job_id_rejection(self, stderr: str) -> bool:
+        # Recorded on Fugaku: `pjstat -v --choose jid,st,ec,sn r1` exits 1
+        # with `[ERR.] PJM 0211 pjstat Invalid jobid: r1.` on stderr,
+        # identically for the -H history view. A numeric but nonexistent
+        # id exits 0. Both the message code and the phrase must match on
+        # the same line so wording drift on another deployment fails
+        # closed (plain SSHError) rather than misclassifying an unrelated
+        # 0211-coded failure — or a multi-line stderr whose lines each
+        # carry only one of the two markers.
+        return any(
+            "PJM 0211" in line and "Invalid jobid" in line
+            for line in stderr.splitlines()
+        )
 
     def parse_job_id(self, output: str) -> str:
         # pjsub output example: "[INFO] PJM 0000 pjsub Job XXXXXXXX submitted."
