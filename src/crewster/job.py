@@ -6,9 +6,15 @@ from pathlib import Path
 from jinja2 import Template
 
 from .config import HpcConfig, _validate_dq_shell_value
-from .ssh import SSHManager
+from .ssh import CommandResult, SSHError, SSHManager
 from .run import RunConfig
-from .scheduler import JobDetail, JobStatus, SchedulerError, get_scheduler
+from .scheduler import (
+    JobDetail,
+    JobIdRejectedError,
+    JobStatus,
+    SchedulerError,
+    get_scheduler,
+)
 
 
 def _resolve_home_path(ssh_manager, path: str) -> str:
@@ -247,8 +253,39 @@ class JobManager:
         )
         return self.scheduler.parse_job_id(result.stdout)
 
+    def _run_id_query(self, cmd: list[str]) -> CommandResult:
+        """Run a status / detail command whose sole argument of interest is
+        a job id, classifying the scheduler's affirmative id rejection.
+
+        A run-id-shaped argument (``r1``) reaching ``sacct -j`` / ``pjstat``
+        makes the command itself exit non-zero, which ``run_command``
+        surfaces as a plain ``SSHError`` — indistinguishable, by type, from
+        a transport failure. Match the captured stderr against the
+        scheduler's recorded rejection signature and re-raise as
+        ``JobIdRejectedError`` so callers funnel it into the same "no such
+        job" handling as parse-side absence (both are ``SchedulerError``)
+        while still being able to tell the deterministic rejection apart.
+        Anything unrecognized re-raises unchanged (fail-closed), keeping
+        genuine transport failures visible.
+        """
+        try:
+            return self.ssh_manager.run_command(cmd[0], cmd[1:])
+        except SSHError as e:
+            stderr = e.stderr or ""
+            if self.scheduler.is_job_id_rejection(stderr):
+                raise JobIdRejectedError(
+                    f"scheduler rejected the job id: {stderr.strip()}",
+                    stderr=e.stderr,
+                ) from e
+            raise
+
     def get_job_status(self, job_id: str) -> JobStatus:
         """Get job status.
+
+        A scheduler-side rejection of the id itself (non-numeric spec —
+        see ``_run_id_query``) raises ``SchedulerError`` directly; the
+        fallback is not consulted because rejection is deterministic,
+        not absence lag.
 
         On a ``SchedulerError`` from the primary status command (no data
         row — a fresh job not yet indexed, or one aged out of the active
@@ -268,10 +305,9 @@ class JobManager:
         Never returns ``JobStatus.UNKNOWN`` — that terminal interpretation
         belongs to ``wait_for_job`` once its retry budget is exhausted.
         """
-        from .ssh import SSHError
 
         cmd = self.scheduler.status_cmd(job_id)
-        result = self.ssh_manager.run_command(cmd[0], cmd[1:])
+        result = self._run_id_query(cmd)
         try:
             return self.scheduler.parse_status(result.stdout)
         except SchedulerError as primary_absence:
@@ -296,17 +332,17 @@ class JobManager:
         (``detail_cmd`` is ``None`` — e.g. PJM), distinct from ``[]`` which
         means the scheduler is supported but has no usable row yet (sacct
         accounting lag). A multi-element list represents an array job's tasks
-        or a heterogeneous job's components.
+        or a heterogeneous job's components. A scheduler-side rejection of
+        the id itself raises ``SchedulerError`` (see ``_run_id_query``).
         """
         cmd = self.scheduler.detail_cmd(job_id)
         if cmd is None:
             return None
-        result = self.ssh_manager.run_command(cmd[0], cmd[1:])
+        result = self._run_id_query(cmd)
         return self.scheduler.parse_detail(result.stdout)
 
     def get_job_output(self, run_id: str, job_id: str, error: bool = False) -> str:
         """Get job output file contents"""
-        from .ssh import SSHError
 
         workdir = _resolve_home_path(self.ssh_manager, self.config.cluster.workdir)
         run_dir = f"{workdir}/.crewster/runs/{run_id}"
@@ -335,7 +371,6 @@ class JobManager:
         on a missing file. For active or unknown-status jobs, runs `tail -F`
         which retries internally until the output file appears.
         """
-        from .ssh import SSHError
 
         try:
             status = self.get_job_status(job_id)
@@ -380,13 +415,16 @@ class JobManager:
                 unbounded retry on persistently-empty status output — a
                 never-submitted job, or a PJM job aged out of every view.
                 The counter resets on any successful status read, so it
-                does not trip on transient accounting lag. Generic
-                (non-``SchedulerError``) ``SSHError`` does not count and
-                is retried without bound, as before.
+                does not trip on transient accounting lag. A recognized
+                id rejection (``JobIdRejectedError``) is deterministic and
+                returns ``JobStatus.UNKNOWN`` on the first poll without
+                consuming the budget; an *unrecognized* rejection (wording
+                the scheduler's ``is_job_id_rejection`` does not know) is
+                indistinguishable from a transport failure and is retried
+                without bound, like any generic (non-``SchedulerError``)
+                ``SSHError``.
         """
         import time
-
-        from .ssh import SSHError
 
         current_interval = interval
         consecutive_missing = 0
@@ -402,6 +440,11 @@ class JobManager:
 
             try:
                 status = self.get_job_status(job_id)
+            except JobIdRejectedError:
+                # The scheduler rejected the id itself — deterministic, so
+                # further polls can never succeed. Terminate immediately
+                # rather than burning the missing-data budget.
+                return JobStatus.UNKNOWN
             except SchedulerError:
                 # No data row even after any fallback. Bound the retry so
                 # a never-indexed / aged-out job cannot hang the caller

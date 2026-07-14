@@ -6,9 +6,15 @@ from unittest.mock import MagicMock
 import pytest
 
 from crewster.job import JobManager, JobStatus, _extract_prologue_directives
-from crewster.scheduler import JobDetail, SchedulerError
+from crewster.scheduler import JobDetail, JobIdRejectedError, SchedulerError
 from crewster.ssh import SSHManager, SSHError
 from crewster.config import HpcConfig, ClusterConfig, EnvConfig, SlurmConfig, PjmConfig
+
+from rejection_fixtures import (
+    PJSTAT_ID_REJECTION_STDERR,
+    SACCT_ID_REJECTION_STDERR,
+    make_ssh_failure,
+)
 
 
 @pytest.fixture
@@ -385,6 +391,105 @@ class TestJobManagerStatus:
         with pytest.raises(SchedulerError):
             manager.get_job_status("12345678")
         assert mock_ssh_manager.run_command.call_count == 2
+
+
+class TestJobManagerIdRejection:
+    """Scheduler-side rejection of the job-id argument itself
+    (https://github.com/ultimatile/crewster/issues/50).
+
+    stderr fixtures are the verbatim rejections recorded on real clusters.
+    Classification must be signature-matched: a generic SSHError (transport
+    failure) keeps propagating unchanged so wait_for_job's unbounded
+    transient retry and the CLI's failure visibility are preserved."""
+
+    def test_get_job_status_slurm_rejection_raises_rejected_error(
+        self, mock_ssh_manager, sample_config
+    ):
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.side_effect = make_ssh_failure(
+            SACCT_ID_REJECTION_STDERR
+        )
+
+        with pytest.raises(JobIdRejectedError) as exc_info:
+            manager.get_job_status("r1")
+        # The structured stderr travels with the classified error so
+        # callers keep the scheduler's diagnostic without message parsing.
+        assert exc_info.value.stderr == SACCT_ID_REJECTION_STDERR
+
+    def test_get_job_status_pjm_rejection_skips_history_fallback(
+        self, mock_ssh_manager, pjm_config
+    ):
+        # Rejection is deterministic (the id itself is bad), not absence
+        # lag, so the -H history view must not be consulted: it would
+        # reject the same id with the same error.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=pjm_config)
+        mock_ssh_manager.run_command.side_effect = make_ssh_failure(
+            PJSTAT_ID_REJECTION_STDERR, cmd="pjstat r1"
+        )
+
+        with pytest.raises(JobIdRejectedError):
+            manager.get_job_status("r1")
+        assert mock_ssh_manager.run_command.call_count == 1
+
+    def test_get_job_detail_slurm_rejection_raises_rejected_error(
+        self, mock_ssh_manager, sample_config
+    ):
+        # On Slurm the detail command runs before any status query in the
+        # CLI status path, so it is the first place a rejected id lands.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.side_effect = make_ssh_failure(
+            SACCT_ID_REJECTION_STDERR
+        )
+
+        with pytest.raises(JobIdRejectedError):
+            manager.get_job_detail("r1")
+
+    def test_wait_for_job_terminates_immediately_on_rejection(
+        self, mock_ssh_manager, sample_config, monkeypatch
+    ):
+        # A recognized rejection is deterministic, so wait_for_job must
+        # return UNKNOWN on the first poll instead of burning the
+        # max_missing_polls budget (10 polls with adaptive backoff).
+        import time
+
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.side_effect = make_ssh_failure(
+            SACCT_ID_REJECTION_STDERR
+        )
+
+        status = manager.wait_for_job("r1", interval=0)
+        assert status == JobStatus.UNKNOWN
+        assert mock_ssh_manager.run_command.call_count == 1
+
+    @pytest.mark.parametrize("method", ["get_job_status", "get_job_detail"])
+    def test_non_matching_ssherror_propagates_unchanged(
+        self, mock_ssh_manager, sample_config, method
+    ):
+        # A transport failure must stay a plain SSHError: reclassifying it
+        # would misreport an outage as job absence.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        original = SSHError(
+            "SSH command failed (exit 255): sacct -j 12345",
+            stderr="ssh: connect to host cluster port 22: Connection refused\n",
+        )
+        mock_ssh_manager.run_command.side_effect = original
+
+        with pytest.raises(SSHError) as exc_info:
+            getattr(manager, method)("12345")
+        assert exc_info.value is original
+        assert not isinstance(exc_info.value, SchedulerError)
+
+    def test_ssherror_without_stderr_propagates_unchanged(
+        self, mock_ssh_manager, sample_config
+    ):
+        # SSHError.stderr defaults to None; classification must tolerate it.
+        manager = JobManager(ssh_manager=mock_ssh_manager, config=sample_config)
+        mock_ssh_manager.run_command.side_effect = SSHError("boom")
+
+        with pytest.raises(SSHError) as exc_info:
+            manager.get_job_status("12345")
+        assert not isinstance(exc_info.value, SchedulerError)
 
 
 class TestJobManagerDetail:

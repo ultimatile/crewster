@@ -6,6 +6,8 @@ import pytest
 
 from crewster.ssh import SSHManager, SSHError
 
+from rejection_fixtures import SACCT_ID_REJECTION_STDERR
+
 
 class TestSSHManagerInit:
     def test_init_with_host(self):
@@ -143,6 +145,26 @@ class TestSSHManagerRunCommand:
             assert "stdout:\npartial output" in msg
             assert "stderr:\nwarning then error" in msg
 
+    def test_run_command_failure_carries_structured_stderr(self):
+        # The raised SSHError exposes the remote stderr as a field so
+        # callers (JobManager's id-rejection classification) can match
+        # scheduler signatures without parsing the display message.
+        manager = SSHManager(host="myhpc")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr=SACCT_ID_REJECTION_STDERR,
+            )
+            with pytest.raises(SSHError) as exc_info:
+                manager.run_command("sacct", ["-j", "r1"])
+            assert exc_info.value.stderr == SACCT_ID_REJECTION_STDERR
+
+    def test_ssherror_stderr_defaults_to_none(self):
+        # Raise sites that predate stderr capture (or have none) must
+        # still construct with the message alone.
+        assert SSHError("boom").stderr is None
+
     def test_run_command_failure_with_empty_streams_keeps_command_and_code(self):
         # Boundary case: command failed but produced no output. The
         # message must still be informative — exit code and command name
@@ -154,6 +176,9 @@ class TestSSHManagerRunCommand:
                 manager.run_command("hostname")
             msg = str(exc_info.value)
             assert msg == "SSH command failed (exit 255): hostname"
+            # Empty stderr normalizes to None so the field stays a reliable
+            # "no captured stderr" sentinel.
+            assert exc_info.value.stderr is None
 
     def test_run_command_captures_stderr(self):
         manager = SSHManager(host="myhpc")

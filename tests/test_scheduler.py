@@ -5,6 +5,8 @@ import pytest
 from crewster.scheduler import PJM, JobDetail, JobStatus, SchedulerError, Slurm
 from crewster.ssh import SSHError
 
+from rejection_fixtures import PJSTAT_ID_REJECTION_STDERR, SACCT_ID_REJECTION_STDERR
+
 
 class TestSlurmStatusCmd:
     def test_status_cmd_includes_X_flag(self):
@@ -297,6 +299,62 @@ class TestSchedulerErrorInheritance:
         # handling. SchedulerError must inherit so those existing
         # handlers cover it without modification.
         assert issubclass(SchedulerError, SSHError)
+
+
+class TestIsJobIdRejection:
+    """Signature matching for scheduler-side job-id rejection
+    (https://github.com/ultimatile/crewster/issues/50).
+
+    Positive fixtures are the verbatim stderr recorded on real clusters
+    (slurm 23.02.6 / Fugaku PJM) for a run-id-shaped argument passed as a
+    job id. Matching must stay fail-closed: anything unrecognized keeps
+    propagating as a plain SSHError, so transport failures are never
+    misreported as job absence."""
+
+    def test_slurm_matches_recorded_sacct_rejection(self):
+        assert Slurm().is_job_id_rejection(SACCT_ID_REJECTION_STDERR)
+
+    def test_pjm_matches_recorded_pjstat_rejection(self):
+        assert PJM().is_job_id_rejection(PJSTAT_ID_REJECTION_STDERR)
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "",
+            "ssh: connect to host cluster port 22: Connection refused",
+            "sacct: error: slurmdbd: Connection refused",
+            # The phrase without sacct's `fatal:` prefix (e.g. echoed by a
+            # site wrapper inside otherwise-transient diagnostics) must not
+            # classify as rejection.
+            "wrapper: Bad job/step specified mentioned in prior run\n"
+            "ssh: connection reset\n",
+        ],
+        ids=["empty", "transport", "slurmdbd-outage", "phrase-no-prefix"],
+    )
+    def test_slurm_rejects_unrelated_stderr(self, stderr):
+        assert not Slurm().is_job_id_rejection(stderr)
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "",
+            "ssh: connect to host fugaku port 22: Connection refused",
+            # Same message code with different wording, and the phrase
+            # without the code: each alone must not match (fail-closed
+            # against wording drift / unrelated 0211-coded failures).
+            "[ERR.] PJM 0211 pjstat some other failure.",
+            "pjstat Invalid jobid: r1.",
+            # Both markers present but on different lines: matching is
+            # per-line, so a multi-line stderr mixing an unrelated
+            # 0211-coded failure with a stray "Invalid jobid" mention
+            # must not classify as rejection.
+            "[ERR.] PJM 0211 pjstat some other failure.\n"
+            "wrapper: Invalid jobid mentioned elsewhere\n",
+        ],
+        ids=["empty", "transport", "code-only", "phrase-only", "split-lines"],
+    )
+    def test_pjm_rejects_unrelated_stderr(self, stderr):
+        assert not PJM().is_job_id_rejection(stderr)
 
 
 class TestPJMParseJobID:

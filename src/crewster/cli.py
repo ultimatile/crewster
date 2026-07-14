@@ -17,7 +17,7 @@ from .ssh import SSHManager
 from .sync import SyncManager
 from .job import JobManager, JobStatus
 from .run import RunManager
-from .scheduler import JobDetail, SchedulerError
+from .scheduler import JobDetail, JobIdRejectedError, SchedulerError
 
 
 class SchedulerChoice(str, Enum):
@@ -581,31 +581,42 @@ def status(
     ssh = SSHManager(host=hpc_config.cluster.host)
     job_manager = JobManager(ssh_manager=ssh, config=hpc_config)
 
-    details = job_manager.get_job_detail(job_id)
-    if not details:
-        # Scheduler does not support detail (PJM -> None), or sacct has not yet
-        # recorded this job ([] -> no usable row). Fall back to the existing
-        # single-line display. SchedulerError (parse-side absence) becomes a
-        # friendly message; other SSHError (real transport/command failure)
-        # propagates so legitimate failures stay visible to the user.
-        try:
+    # One try covers both scheduler queries so a SchedulerError — parse-side
+    # absence or affirmative id rejection, whichever query it comes from —
+    # is handled at its first observation, without re-querying the scheduler.
+    # Other SSHError (real transport/command failure) propagates so
+    # legitimate failures stay visible to the user.
+    try:
+        details = job_manager.get_job_detail(job_id)
+        if not details:
+            # Scheduler does not support detail (PJM -> None), or sacct has
+            # not yet recorded this job ([] -> no usable row). Fall back to
+            # the single-line display.
             job_status = job_manager.get_job_status(job_id)
-        except SchedulerError:
-            if run is None:
-                # The id failed both lookups: no local run metadata and no
-                # scheduler data. That is indistinguishable from accounting
-                # lag on a raw just-submitted job id, but run metadata lives
-                # under the project root used at submit time, so a wrong
-                # --project-dir/--config produces exactly this double miss.
-                # Report the metadata miss the way job-output/wait do rather
-                # than implying the scheduler knows the job.
-                _print_run_not_found(id, run_manager)
-                raise typer.Exit(1)
-            print(
-                f"Job {job_id}: status unavailable yet (scheduler accounting not ready)"
-            )
+            print(f"Job {job_id}: {job_status.value}")
             return
-        print(f"Job {job_id}: {job_status.value}")
+    except SchedulerError as e:
+        if run is None:
+            # The id failed both lookups: no local run metadata and no
+            # scheduler data (or the scheduler rejected the id outright).
+            # That is indistinguishable from accounting lag on a raw
+            # just-submitted job id, but run metadata lives under the
+            # project root used at submit time, so a wrong
+            # --project-dir/--config produces exactly this double miss.
+            # Report the metadata miss the way job-output/wait do rather
+            # than implying the scheduler knows the job.
+            _print_run_not_found(id, run_manager)
+            raise typer.Exit(1)
+        if isinstance(e, JobIdRejectedError):
+            # Run metadata exists but the scheduler rejects its job id —
+            # deterministic, so "not ready yet" would misdirect: the id
+            # will never become queryable (stale or corrupt metadata).
+            print(
+                f"Job {job_id}: the scheduler rejected this job id"
+                f" (run {run.run_id} metadata may be stale or corrupt)"
+            )
+            raise typer.Exit(1)
+        print(f"Job {job_id}: status unavailable yet (scheduler accounting not ready)")
         return
 
     if len(details) == 1:

@@ -30,3 +30,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/crewster"]
+
+[tool.pytest.ini_options]
+# Make tests/ an explicit import root so helper modules such as
+# tests/rejection_fixtures.py resolve regardless of pytest's import mode
+# (the default prepend mode inserts tests/ implicitly; importlib does not).
+pythonpath = ["tests"]
+testpaths = ["tests"]

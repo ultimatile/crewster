@@ -6,6 +6,12 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from crewster.main import app
+
+from rejection_fixtures import (
+    PJSTAT_ID_REJECTION_STDERR,
+    SACCT_ID_REJECTION_STDERR,
+    make_ssh_failure,
+)
 from crewster import cli  # noqa: F401 - register commands
 
 
@@ -454,6 +460,87 @@ def test_status_unknown_id_with_existing_runs_omits_root_hint(
     assert result.exit_code == 1
     assert "Run not found: unknown-id" in result.stdout
     assert "no runs recorded" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("scheduler", "rejection_stderr"),
+    [
+        ("slurm", SACCT_ID_REJECTION_STDERR),
+        ("pjm", PJSTAT_ID_REJECTION_STDERR),
+    ],
+)
+def test_status_scheduler_rejected_id_reports_run_not_found(
+    cli_runner, temp_dir, monkeypatch, scheduler, rejection_stderr
+):
+    """A run-id-shaped argument with no local metadata reaches the scheduler,
+    which rejects the non-numeric id with a non-zero exit
+    (https://github.com/ultimatile/crewster/issues/50). That rejection must
+    funnel into the same Run-not-found report as a numeric double miss — from
+    a single scheduler query, not a classify-then-requery replay — and not
+    escape as an SSHError traceback. Mocks at the SSHManager layer with the
+    stderr recorded on real clusters — JobManager-level mocks replace the
+    error-raising layer entirely and cannot pin this path."""
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init", "--scheduler", scheduler])
+
+    calls: list[str] = []
+
+    def reject(self, cmd, args=None, input_text=None):
+        calls.append(cmd)
+        raise make_ssh_failure(rejection_stderr, cmd=cmd)
+
+    with patch("crewster.ssh.SSHManager.run_command", reject):
+        result = cli_runner.invoke(app, ["status", "r1"])
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Run not found: r1" in result.stdout
+    assert "no runs recorded" in result.stdout
+    # The rejection is classified at its first observation; a second SSH
+    # round-trip would both waste time and risk a transport flake turning
+    # an already-classified rejection back into a traceback.
+    assert len(calls) == 1
+
+
+def test_status_known_run_with_rejected_job_id_reports_rejection(
+    cli_runner, temp_dir, monkeypatch
+):
+    """When run metadata exists but its recorded job id is rejected by the
+    scheduler (stale or corrupt metadata), the deterministic rejection must
+    not masquerade as transient accounting lag — the user would retry
+    forever. Report the rejection and exit non-zero."""
+    monkeypatch.chdir(temp_dir)
+    _setup_run_meta(temp_dir)
+
+    def reject(self, cmd, args=None, input_text=None):
+        raise make_ssh_failure(SACCT_ID_REJECTION_STDERR, cmd=cmd)
+
+    with patch("crewster.ssh.SSHManager.run_command", reject):
+        result = cli_runner.invoke(app, ["status", "r1"])
+
+    assert result.exit_code == 1
+    assert "rejected this job id" in result.stdout
+    assert "status unavailable yet" not in result.stdout
+
+
+def test_status_transport_failure_still_raises(cli_runner, temp_dir, monkeypatch):
+    """A non-rejection SSH failure (transport outage) must stay visible as an
+    SSHError rather than being misreported as a missing run."""
+    from crewster.ssh import SSHError
+
+    monkeypatch.chdir(temp_dir)
+    cli_runner.invoke(app, ["init"])
+
+    def outage(self, cmd, args=None, input_text=None):
+        raise SSHError(
+            f"SSH command failed (exit 255): {cmd}",
+            stderr="ssh: connect to host cluster port 22: Connection refused\n",
+        )
+
+    with patch("crewster.ssh.SSHManager.run_command", outage):
+        result = cli_runner.invoke(app, ["status", "r1"])
+
+    assert isinstance(result.exception, SSHError)
 
 
 def test_status_normalizes_decorated_cancelled_state(cli_runner, temp_dir, monkeypatch):
