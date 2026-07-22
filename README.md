@@ -153,7 +153,7 @@ crewster wait 12345678
 
 crewster walks up from the current directory to find `crewster.toml`, similar to how git finds `.git`. This means you can run crewster commands from any subdirectory within your project.
 
-Resolution order: `--config` / `-c` > `$CREWSTER_CONFIG` > walk-up discovery > `./crewster.toml`.
+Resolution order: `--config` / `-c` (given after the subcommand, e.g. `crewster sync -c ~/my.toml`) > `$CREWSTER_CONFIG` > walk-up discovery > `./crewster.toml`.
 
 For backward compatibility, the legacy `$HPC_CONFIG` environment variable and a `hpc.toml` filename are still honored as a read-only fallback, with a deprecation warning printed to stderr. This fallback is removed in v1.0. If you keep a legacy `hpc.toml`, add `.crewster` to `[sync] ignore_push` so the run-metadata directory is not pushed to the remote.
 

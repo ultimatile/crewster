@@ -33,7 +33,7 @@ If `crewster.toml` does not exist in the project, run `crewster init` to create 
 - **run_id vs job_id**: `crewster submit` returns both. Either can be used with `status`, `job-output`, `wait`.
 - **Default working directory**: `crewster submit` runs the job with its PWD set to the resolved `[cluster].workdir` from `crewster.toml`. Scripts passed via `-s` therefore do **not** need to `cd` to the project root — they start there. Adding a manual `cd` (or relying on `$SLURM_SUBMIT_DIR`, which may not be propagated to the job's environment) can move the job to the wrong directory.
 - **Multi-setup runs**: Submit from subdirectories to set the job's remote working directory accordingly (e.g., `cd runs/setup-a && crewster submit "python main.py"` runs in `/remote/project/runs/setup-a`).
-- **Config resolution**: `--config` / `-c` > `$CREWSTER_CONFIG` > walk-up discovery > `./crewster.toml`. A legacy `$HPC_CONFIG` / `hpc.toml` is still read as a deprecated fallback (prints a warning; removed in v1.0).
+- **Config resolution**: `--config` / `-c` (given after the subcommand, e.g. `crewster sync -c ~/my.toml`) > `$CREWSTER_CONFIG` > walk-up discovery > `./crewster.toml`. A legacy `$HPC_CONFIG` / `hpc.toml` is still read as a deprecated fallback (prints a warning; removed in v1.0).
 - **Sync scope**: `crewster sync` always syncs the entire project root (the `--project-dir` override when given), regardless of CWD.
 
 ## Writing scripts for `crewster submit -s`
